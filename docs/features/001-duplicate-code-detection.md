@@ -1,6 +1,6 @@
 # Feature: Duplicate Code Detection (TED core, dry4go UX skin)
 **Branch:** vibe/001-duplicate-code-detection
-**Status:** WIP — **S1 DONE**; T11 landed (S3 partial). Next: T8 → scoring pass → T9/T10 → D5 → T12
+**Status:** WIP — **S1 DONE**; T11 + T8 landed. Next: T8b (N61) → scoring pass → T9/T10 → D5 → T12
 
 ## Requirements
 
@@ -80,7 +80,8 @@ built binary against fixture trees.
 | T6  | S1 | Report adapter: text (2 dp) + json (raw f64, exact key order) byte-parity. **Unit:** golden-string assertions for both formats. | Done | ffa28a3 |
 | T7  | S1 | CLI wiring (`clap`): flags/aliases, TED defaults, format selection, `anyhow` error mapping, exit 0 on success / non-zero on usage+internal. **Integration:** run binary on fixture dir, assert text & json stdout. | Done | be5128b |
 | T7b | S1 | Close S1 test gaps before stamping S1 done: **N43** CRLF-invariance (`\n` vs `\r\n` fixture → byte-identical report), **N44** `.gitignore`/`target/` skipping exercised through `run()`, **N45** exit-1 at the binary level. Also **N42** design.md drift (name lib.rs composition-root role). | Done | 400243a |
-| T8  | S2 | Extend extraction to `impl` block bodies, closures, free `{}` blocks. **Unit:** nested-fragment extraction + node counts. | Pending | - |
+| T8  | S2 | Extend extraction to `impl` block bodies, closures, free `{}` blocks. **Unit:** nested-fragment extraction + node counts. Ships the N23/N30 ceiling, N26 `u32` cells, N41, N56–N58. | Done | 5d04900 |
+| T8b | S2 | **N61 intra-pair containment filter** (found at T8 review): drop pairs whose fragments share a path and whose spans overlap, at admission, pre-TED. Without it every single-method `impl` reports against its own method at ~0.95. Also N63/N66/N67. **Must precede the scoring pass (N62).** | Pending | - |
 | T9  | S2 | Containment-dedup policy (maximal-parent-wins, both-sides; identical-span dedup; deterministic tie-break). **Unit:** both-sided suppression; one-sided keep; identical-span dedup. | Pending | - |
 | T10 | S2 | **Integration:** fixture with duplicated nested closures/blocks → assert only maximal pairs reported. | Pending | - |
 | T11 | S3 | Admissible size-ratio pre-filter (`sim ≤ min(n₁,n₂)/max(n₁,n₂)`): prune pairs below `--threshold` before TED — provably never drops a real match. **Unit:** prune-soundness (a would-be match is never pruned). **Landed as `similarity(max−min,min,max) >= threshold` — see N52 restated.** | Done | bb38a40 |
@@ -533,3 +534,69 @@ scoring pass would churn T9/T10's golden fixtures a second time.
 **Open ledger after T11:** N14/N15/**N27** (scoring pass, before D5; N27 blocking) · N23/N30 (T8) ·
 N31/N33/N34/N40 (record/T12) · N41 (with T8) · N46 (record) · N55 (scoring-pass churn) · **N56/N57/N58**
 (with T8) · N59 (rescopes T12) · N60 (record).
+
+### T8 review notes (Anders — APPROVE-WITH-NOTES)
+
+Extraction rewrite, `MAX_SUPPORTED_NODES`, `u32` DP cells, N41/N56/N57/N58: all sound and
+correctly placed. Ratified without change: the silent clamp on `max_nodes` (observationally
+inert — no fragment reaches 2.1 B nodes; an error variant for an unreachable condition is the
+wrong trade under N41); **no `--max-nodes` flag** (dry4go parity + YAGNI; revisit only if N66
+finds real fragments near the ceiling); skipping assoc consts/types; trait definitions out;
+in-body nested items opaque; `Impl(Function…)` tree shape — the root is 1 node, so it does
+**not** make same-arity `impl`s trivially resemble each other.
+
+- **N61 (correctness — blocks clean scoring; A3 scope gap).** `detect` scores every unordered
+  pair, including a fragment against its own **ancestor**. For a single-method `impl`:
+  `Impl(F)` (n+1 nodes) vs `F` (n nodes), δ = 1, `sim = 1 − 1/(n+1)` = **0.95 at the
+  `min_nodes = 20` floor** — admitted by the pre-filter, passed by the 0.75 gate. Every
+  `impl Display`/`Default`/`From` in the tree emits a DUPLICATE against its own method. Same
+  for any parent/child pair with close node counts (fn whose body is one free block; closure
+  that is nearly its whole fn). **T9 will not remove this:** A3 is specified as *pair-vs-pair*
+  containment ("nested pair contained on **both** sides"); this is *intra-pair* containment —
+  one pair whose left contains its right. R7 assumed dedup covered it; the written policy
+  doesn't reach it. **Fix:** in `detect`, at admission and **pre-TED**, drop pairs whose two
+  fragments share a path and whose line spans overlap. Perf win too; keeps `dedup` purely
+  pair-vs-pair. Legitimate in-file clones have disjoint spans and are unaffected. Add the rule
+  to `design.md` → Detect, and state the two containment notions distinctly in A3.
+- **N62 (sequencing — supersedes the N55 ordering).** N61's filter must land **before** the
+  N27/N14/N15 scoring pass, not with T9. A corpus where every single-method `impl` contributes
+  a ~0.95 pair poisons any distribution-based calibration. New order:
+  **T8b (N61 overlap filter) → N27/N14/N15 scoring pass → T9/T10 → D5 → T12.**
+- **N63 (pin the assoc-const/type judgement).** Skipping them is ratified, but it is a
+  *semantic commitment* of R3 weight: two `impl`s differing only in associated consts/types
+  now lower identically. Pin it with an explicit parse test asserting equal trees, so the
+  choice is deliberate rather than incidental.
+- **N64 (record-only — flavored-block blind spot).** `unsafe`/`async`/`try`/`const` blocks are
+  not extracted. `async { … }` is `ExprAsync`, not `ExprClosure`, so in async-heavy code a
+  repeated task body is invisible unless its enclosing fn matches. Conservative for R7 and
+  correct for v1; revisit post-D5 if dogfooding shows async clone sites being missed.
+- **N65 (record-only — asymmetry).** `impl S { … }` emits an `ImplBlock` wrapper fragment;
+  `trait T { … }` emits none, only its default-body methods. Defensible (trait defaults are
+  the only code), but the two constructs are now scored at different granularities. Note it in
+  A1 so it reads as a decision.
+- **N66 (do with T8b — stale ceiling justification).** `cli::MAX_NODES`'s doc cites the S1
+  dogfood's largest fragment, measured on the **function-only** set. ImplBlock fragments are
+  ≈ the sum of their methods, so the ceiling is far more reachable under EXTENDED. Re-measure
+  the max fragment node count on the dogfood post-T8 and restate. Also record the mitigating
+  property: dropping an oversized ImplBlock is **benign** — its methods are still compared
+  individually. Fold the 2000×2000 worst-pair wall-clock into N59's envelope measurement; if a
+  single admitted maximal pair costs seconds, 2000 is too generous.
+- **N67 (trivial).** `src/lib.rs` `run` doc: the line "The ceiling lives in this composition
+  root, not in `detect`, because core is" is duplicated (lines 115–116).
+
+**Tests to add (with T8b unless noted):**
+- `detect`: a single-method `impl` yields **no** candidate against its own method; a nested
+  closure yields none against its enclosing fn; two disjoint in-file clones still pair.
+- `parse` (T8, now): assoc-const/type invariance (N63); trait def → N method fragments, no
+  `ImplBlock`; closure body / `else` / match-arm blocks **not** emitted while a free `{}`
+  statement **is**; nested closure-in-closure → both emitted; in-body nested `fn` → not
+  emitted and lowers to a `Label::Item` leaf; output sorted by `canonical_key`.
+- Integration: fixture with one single-method `impl` plus one real cross-file clone → exactly
+  one finding.
+- Scoring pass: emit a post-floor fragment-kind histogram, so we can see how many
+  `Closure`/`Block` fragments survive `min_nodes` before choosing per-kind floors (don't add
+  per-kind floors speculatively).
+
+**Open ledger after T8:** **N61/N62** (T8b, blocking clean calibration) · N14/N15/**N27** (scoring pass,
+after T8b) · N63/N66/N67 (with T8b) · N64/N65 (record) · N31/N33/N34/N40 (record/T12) · N46 (record) ·
+N59 (rescopes T12) · N60 (record).
