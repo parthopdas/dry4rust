@@ -73,7 +73,7 @@ built binary against fixture trees.
 | #   | Slice | Task | Status | Commit |
 |-----|-------|------|--------|--------|
 | T1  | S1 | Scaffold lib+bin crates (edition 2021), deps (`syn`, `ignore`, `clap`, `thiserror`, `anyhow`, `serde`, `serde_json`), module skeleton, `error` types. No behavior. | Done | 0411756 |
-| T2  | S1 | Domain model (`Fragment`, `Candidate`) + discovery adapter (`ignore` crate: walk `*.rs`, honor `.gitignore`, skip `/target`, normalize paths to `/`). **Unit:** filtering + path normalization. **Integration:** temp tree with `.gitignore`. | Pending | - |
+| T2  | S1 | Domain model (`Fragment`, `Candidate`) + discovery adapter (`ignore` crate: walk `*.rs`, honor `.gitignore`, skip `/target`, normalize paths to `/`). **Unit:** filtering + path normalization. **Integration:** temp tree with `.gitignore`. | Done | (pending) |
 | T3  | S1 | Parse adapter (`syn` → normalized label tree) + fragment extraction for free functions & methods (inherent/trait-impl/trait-default); node counting; identifier/literal canonicalization. **Unit:** source→fragments + node counts. | Pending | - |
 | T4  | S1 | TED engine (Zhang–Shasha, unit cost) + similarity normalization (pure, std-only). **Unit:** known small trees→known δ; identical→1.0; disjoint→0.0; symmetry. | Pending | - |
 | T5  | S1 | Detect orchestration: pairwise compare, apply min-lines/min-nodes filters + threshold gate, canonical `(left,right)` ordering, deterministic candidate ordering. **Unit:** filter application + determinism. | Pending | - |
@@ -112,7 +112,9 @@ built binary against fixture trees.
   `sim = 1 − 2δ/(|T₁|+|T₂|+δ)`, δ = unit-cost (ins/del/relabel = 1) tree-edit distance.
 - **A3:** Containment-dedup = maximal-parent-wins when containment holds on **both** sides; identical-span
   pairs de-duplicated; one-sided containment keeps both; deterministic `(path,start,end)` tie-break.
-- **A4:** Discovery honors `.gitignore` via `ignore`; scans `*.rs`; skips `/target`.
+- **A4:** Discovery honors **in-tree** `.gitignore` via `ignore` (machine-global/parent gitignores
+  disabled for cross-machine determinism — see N5); scans `*.rs`; **skips any directory named `target`
+  at any depth** (accepted over root-only `/target` — correct for nested-workspace `target/` dirs; N7).
 - **A5:** Layout = 1 lib + 1 bin. Adapters (`syn`/`ignore`/`clap`/`serde`) confined to their modules;
   core (`tree`/`ted`/`similarity`/`dedup`/`detect`) is pure std-only.
 - **A6:** Label model = structural `syn` node kind with identifiers/literals canonicalized, so Type-2
@@ -155,3 +157,21 @@ built binary against fixture trees.
 - **N3:** consider `#[non_exhaustive]` on `pub enum Error` (variants grow in T2–T7). Zero-cost future-proofing.
 - **N4 (serde seam, for T2+T6 — most important):** keep `#[derive(Serialize)]` OFF core `model` types;
   `report` owns its own Serialize DTOs and maps from `model`, so serde stays confined to `report` (A5).
+
+### T2 review notes (Anders — approve-with-suggestions)
+
+- **N5 (determinism) — FIXED:** `WalkBuilder` now disables `git_global`/`git_exclude`/`parents`; discovery
+  is a pure function of the scanned tree. Regression test added.
+- **N6 (`Error::Io.path` semantics) — FIXED:** real path in `path`, path-free inner message in `source`,
+  no Display stutter. Regression test added.
+- **N7 (`target` pruning scope) — DECIDED:** any-depth `target` pruning accepted; A4 updated. (Driver call
+  in hands-free mode; flag to human.)
+- **N8 (DRY, for T6):** `Candidate.left_nodes/right_nodes` duplicate `Fragment.node_count`; drop them and
+  derive at report time, or document as a deliberate denormalized output mirror. Resolve at/before T6.
+- **N9 (for T3):** pin `line_count` semantics — `end_line − start_line + 1` vs logical LOC — so `--min-lines`
+  gates on a defined value and dry4go parity stays honest.
+- **N10:** `FragmentKind.kind` has no consumer through S2 yet — confirm one (e.g. stderr diagnostics) or
+  treat as speculative.
+- **N11 (record only):** `hidden(true)` default skips dot-dirs; `canonical_key()` returns a borrow so T5
+  should sort via `sort_by(|a,b| a.canonical_key().cmp(&b.canonical_key()))`; no-args→default `.` is a T7
+  concern; remove `model.rs` `#![allow(dead_code)]` by end of S1.

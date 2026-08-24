@@ -7,8 +7,8 @@
 //! - **adapters** (each confines one third-party crate): `parse` (`syn`),
 //!   `discovery` (`ignore`), `report` (`serde`).
 //!
-//! Only `error` is public API today; the remaining modules are internal
-//! scaffolding filled in by later tasks.
+//! Only `error` and the discovery entry point are public API today; the
+//! remaining modules are internal scaffolding filled in by later tasks.
 
 pub mod error;
 
@@ -22,3 +22,5 @@ pub(crate) mod tree;
 pub(crate) mod discovery;
 pub(crate) mod parse;
 pub(crate) mod report;
+
+pub use discovery::discover_rust_files;
