@@ -10,10 +10,8 @@
 //! The value is returned raw — rounding for display is the report adapter's
 //! job (T6).
 //!
-//! Bridged with `#![allow(dead_code)]` until detect (T5) consumes it.
+//! Bridged with `#![allow(dead_code)]` until the CLI (T7) wires the pipeline.
 #![allow(dead_code)]
-
-use crate::ted::{self, PreparedTree};
 
 /// Normalized similarity in `[0,1]` for an edit distance and two node counts.
 ///
@@ -30,15 +28,17 @@ pub(crate) fn similarity(delta: usize, nodes_a: usize, nodes_b: usize) -> f64 {
     (1.0 - (2.0 * delta) / denominator).clamp(0.0, 1.0)
 }
 
-/// Similarity of two prepared trees — runs the TED and normalizes it.
-pub(crate) fn similarity_prepared(a: &PreparedTree, b: &PreparedTree) -> f64 {
-    similarity(ted::distance(a, b), a.len(), b.len())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ted::{self, PreparedTree};
     use crate::tree::{BlockKind, Label, NormTree};
+
+    /// Local compose of TED + the formula — detect (T5) owns this composition
+    /// in production; `similarity.rs` exposes only the frozen formula (N21).
+    fn similarity_prepared(a: &PreparedTree, b: &PreparedTree) -> f64 {
+        similarity(ted::distance(a, b), a.len(), b.len())
+    }
 
     /// Largest tolerated difference when comparing two computed scores.
     const EPSILON: f64 = 1e-12;

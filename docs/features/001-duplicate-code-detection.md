@@ -75,8 +75,8 @@ built binary against fixture trees.
 | T1  | S1 | Scaffold lib+bin crates (edition 2021), deps (`syn`, `ignore`, `clap`, `thiserror`, `anyhow`, `serde`, `serde_json`), module skeleton, `error` types. No behavior. | Done | 0411756 |
 | T2  | S1 | Domain model (`Fragment`, `Candidate`) + discovery adapter (`ignore` crate: walk `*.rs`, honor `.gitignore`, skip `/target`, normalize paths to `/`). **Unit:** filtering + path normalization. **Integration:** temp tree with `.gitignore`. | Done | 9c60aba |
 | T3  | S1 | Parse adapter (`syn` → normalized label tree) + fragment extraction for free functions & methods (inherent/trait-impl/trait-default); node counting; identifier/literal canonicalization. **Unit:** source→fragments + node counts. | Done | 4c55c8f |
-| T4  | S1 | TED engine (Zhang–Shasha, unit cost) + similarity normalization (pure, std-only). **Unit:** known small trees→known δ; identical→1.0; disjoint→0.0; symmetry. | Done | (next) |
-| T5  | S1 | Detect orchestration: pairwise compare, apply min-lines/min-nodes filters + threshold gate, canonical `(left,right)` ordering, deterministic candidate ordering. **Unit:** filter application + determinism. | Pending | - |
+| T4  | S1 | TED engine (Zhang–Shasha, unit cost) + similarity normalization (pure, std-only). **Unit:** known small trees→known δ; identical→1.0; disjoint→0.0; symmetry. | Done | 411b0a5 |
+| T5  | S1 | Detect orchestration: pairwise compare, apply min-lines/min-nodes filters + threshold gate, canonical `(left,right)` ordering, deterministic candidate ordering. **Unit:** filter application + determinism. | Done | (next) |
 | T6  | S1 | Report adapter: text (2 dp) + json (raw f64, exact key order) byte-parity. **Unit:** golden-string assertions for both formats. | Pending | - |
 | T7  | S1 | CLI wiring (`clap`): flags/aliases, TED defaults, format selection, `anyhow` error mapping, exit 0 on success / non-zero on usage+internal. **Integration:** run binary on fixture dir, assert text & json stdout. | Pending | - |
 | T8  | S2 | Extend extraction to `impl` block bodies, closures, free `{}` blocks. **Unit:** nested-fragment extraction + node counts. | Pending | - |
@@ -252,3 +252,41 @@ Anders end-to-end test asks for T5: (i) the N22 `len()==node_count` invariant ov
 (ii) `parse → prepare → distance → similarity` on two real Type-2 renamed fns asserting `score == 1.0`
 (the feature's core claim, not yet proven end-to-end); (iii) a T11 prune-soundness test (filtered vs
 un-filtered candidate sets identical).
+
+### T5 review notes (Anders — APPROVE-WITH-NOTES; nothing blocked T6)
+
+T5 verified PASS by Bhaskar (full gate, 54 tests). Resolved priors: **N12** (`Analyzed{fragment,tree}` moved
+to core `model`; `parse::Extracted` deleted; core imports no adapter deps), **N8** (`Candidate{left,right,
+score}` — node counts derived from `Fragment.node_count`), **N21** (`similarity_prepared` removed from
+production; `similarity(delta,a,b)` sole seam), **N25** (`ted::distance_trees` now `#[cfg(test)]`), **N26**
+(`debug_assert!` in ted get/set), **N11** (dead_code allow off `model`; tree/parse/ted/similarity/detect
+allows justified until T7). End-to-end Type-2 `score==1.0` claim now proven.
+- **N28 (T7 — threshold validation):** `DetectOptions` has no bound on `threshold`; a NaN/`2.0` threshold
+  yields a silent empty exit-0 report (`score >= NaN` is false). Fix at T7 with a clap `value_parser` range
+  `0.0..=1.0` (rejects NaN → usage error → non-zero exit, per A8) — NOT a core clamp.
+- **N29 (T7 — defaults home):** put defaults `0.75/4/20` in the clap layer (single source; `--help` renders
+  them), NOT `impl Default for DetectOptions`. If core must own the numbers, use `pub(crate) const
+  DEFAULT_*` referenced by clap `default_value_t` — never both. Pin with a T7 integration test.
+- **N30 (N23 placement — important):** if the human picks the node-ceiling option, it CANNOT live in `detect`
+  (core is side-effect-free, A5). Put the ceiling filter + stderr diagnostic UPSTREAM in the T7 wiring, which
+  drops oversized `Analyzed` before calling `detect` — zero change to detect's shape, deterministic, fits A8.
+- **N31 (record):** the `kept.sort_by(canonical_key)` pre-sort is NOT load-bearing for determinism (the final
+  `(left_key,right_key)` sort is already a total order → permutation-invariant). This frees T11/T12 to iterate
+  in SIZE order (bucketing, early break) without touching the determinism contract. Document which (keep as
+  cheap belt-and-braces or drop) so nobody assumes determinism depends on it.
+- **N32 (T11 — style):** express the size-ratio pre-filter as a named pure predicate beside `passes_floors`
+  (e.g. `ratio_admits(n_a, n_b, threshold)`) so T11's prune-soundness test targets a named fn.
+- **N33 (record only, T12):** `PreparedTree` clones labels, so detect holds both every `NormTree` and its
+  prepared copy (~2× peak). Lever if T12 shows it matters: take `Vec<Analyzed>` by value, destructure into
+  `(fragments, prepared)` so trees drop before pairing. Don't change signature speculatively.
+- **N34 (record only):** each `Candidate` deep-clones two `Fragment`s (owned `String` path). Fine at
+  post-threshold cardinality; if S2 blows candidate counts up, `Rc<Fragment>`/index handles are the lever.
+- **N35 (ledger correction — T3 notes still open):** four T3 notes have NO recorded resolution:
+  **N13** (`tree.rs` doc still says "identifiers … and literal values" but types are erased — cheap doc fix,
+  do at T6), **N16** (`Label::Item` comment vs `collect_items` not descending — cheap doc fix, T6), and the
+  product decisions **N14** (fn qualifiers/receiver form) + **N15** (statement semicolon) — decide beside
+  N27/N23 before D5.
+
+Open-notes ledger after T5: **N10** (FragmentKind — decide at T6: stderr diagnostic or delete), **N13/N16**
+(cheap doc fixes at T6), **N14/N15/N23/N27** (product/scoring decisions before D5), **N28/N29/N30** (T7),
+**N31/N32/N33/N34** (record/T11/T12).

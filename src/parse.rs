@@ -8,7 +8,7 @@
 //!
 //! Lowering canonicalizes identifiers/literals and preserves structure; see
 //! [`crate::tree`] for the normalization contract. Bridged with
-//! `#![allow(dead_code)]` until detect (T5) consumes the entry point.
+//! `#![allow(dead_code)]` until the CLI (T7) wires the pipeline.
 #![allow(dead_code)]
 
 use proc_macro2::LineColumn;
@@ -19,20 +19,8 @@ use syn::{
 };
 
 use crate::error::{Error, Result};
-use crate::model::{Fragment, FragmentKind};
+use crate::model::{Analyzed, Fragment, FragmentKind};
 use crate::tree::{BlockKind, Delimiter, Label, Mutability, NormTree, RangeKind};
-
-/// A fragment paired with its normalized tree.
-///
-/// The tree is working state for TED/detect (T4/T5) and is deliberately kept
-/// off `model::Fragment`; the two travel together here instead.
-#[derive(Debug, Clone)]
-pub(crate) struct Extracted {
-    /// The extracted fragment (path/span/counts/kind).
-    pub(crate) fragment: Fragment,
-    /// The fragment's normalized label tree.
-    pub(crate) tree: NormTree,
-}
 
 /// Parse `source` (the contents of the `/`-normalized `path`) and extract every
 /// S1 fragment (free functions + methods), each paired with its normalized tree.
@@ -41,7 +29,7 @@ pub(crate) struct Extracted {
 /// failure is mapped to [`Error::Parse`] with the `syn` error's line/column
 /// folded into the message (the variant carries only a `String`), so location
 /// survives (N2).
-pub(crate) fn extract(path: &str, source: &str) -> Result<Vec<Extracted>> {
+pub(crate) fn extract(path: &str, source: &str) -> Result<Vec<Analyzed>> {
     let file = syn::parse_file(source).map_err(|err| parse_error(path, &err))?;
     let mut out = Vec::new();
     collect_items(path, &file.items, &mut out);
@@ -51,7 +39,7 @@ pub(crate) fn extract(path: &str, source: &str) -> Result<Vec<Extracted>> {
 
 /// Recursively collect fragments from a list of items (descending into inline
 /// modules so `mod m { fn .. }` is covered).
-fn collect_items(path: &str, items: &[Item], out: &mut Vec<Extracted>) {
+fn collect_items(path: &str, items: &[Item], out: &mut Vec<Analyzed>) {
     for item in items {
         match item {
             Item::Fn(f) => out.push(build(path, FragmentKind::Function, &f.sig, &f.block)),
@@ -82,8 +70,8 @@ fn collect_items(path: &str, items: &[Item], out: &mut Vec<Extracted>) {
     }
 }
 
-/// Assemble one [`Extracted`] from a function/method signature and body.
-fn build(path: &str, kind: FragmentKind, sig: &Signature, block: &Block) -> Extracted {
+/// Assemble one [`Analyzed`] from a function/method signature and body.
+fn build(path: &str, kind: FragmentKind, sig: &Signature, block: &Block) -> Analyzed {
     let tree = lower_fn(sig, block);
     let (start_line, end_line) = fn_span(sig, block);
     let fragment = Fragment {
@@ -97,7 +85,7 @@ fn build(path: &str, kind: FragmentKind, sig: &Signature, block: &Block) -> Extr
         line_count: end_line - start_line + 1,
         kind,
     };
-    Extracted { fragment, tree }
+    Analyzed { fragment, tree }
 }
 
 /// The 1-based `(start_line, end_line)` of a function/method — from the `fn`
@@ -488,7 +476,7 @@ fn un_op(op: &UnOp) -> &'static str {
 mod tests {
     use super::*;
 
-    fn extract_ok(source: &str) -> Vec<Extracted> {
+    fn extract_ok(source: &str) -> Vec<Analyzed> {
         extract("test.rs", source).expect("source should parse")
     }
 

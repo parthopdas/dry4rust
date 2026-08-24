@@ -12,9 +12,8 @@
 //! the **keyroots**. Detect (T5) runs this over O(n²) fragment pairs, so those
 //! arrays are derived **once per tree** into a [`PreparedTree`] and reused
 //! across every pair; [`distance`] takes two already-prepared trees.
-//! [`distance_trees`] is the prepare-both convenience wrapper.
 //!
-//! Bridged with `#![allow(dead_code)]` until detect (T5) consumes it.
+//! Bridged with `#![allow(dead_code)]` until the CLI (T7) wires the pipeline.
 #![allow(dead_code)]
 
 use crate::tree::{Label, NormTree};
@@ -108,8 +107,9 @@ pub(crate) fn distance(a: &PreparedTree, b: &PreparedTree) -> usize {
 
 /// Prepares both trees and returns their unit-cost tree-edit distance.
 ///
-/// Convenience for one-off comparisons; T5 prepares once and calls
-/// [`distance`] instead.
+/// Test-only convenience for one-off comparisons (N25): detect prepares once
+/// per fragment and calls [`distance`] instead.
+#[cfg(test)]
 pub(crate) fn distance_trees(a: &NormTree, b: &NormTree) -> usize {
     distance(&PreparedTree::new(a), &PreparedTree::new(b))
 }
@@ -178,11 +178,13 @@ fn relabel_cost(a: &PreparedTree, b: &PreparedTree, node_a: usize, node_b: usize
 
 /// Non-panicking read; every index used above is in range by construction.
 fn get(cells: &[usize], index: usize) -> usize {
+    debug_assert!(index < cells.len(), "ted: read index {index} out of range");
     cells.get(index).copied().unwrap_or(0)
 }
 
 /// Non-panicking write; every index used above is in range by construction.
 fn set(cells: &mut [usize], index: usize, value: usize) {
+    debug_assert!(index < cells.len(), "ted: write index {index} out of range");
     if let Some(cell) = cells.get_mut(index) {
         *cell = value;
     }

@@ -1,10 +1,11 @@
-//! Domain types (`Fragment`, `Candidate`) (core; pure, std-only).
+//! Domain types (`Fragment`, `Analyzed`, `Candidate`) (core; pure, std-only).
 //!
 //! These types carry no third-party derives — serialization lives in the
 //! `report` adapter, which owns its own DTOs and maps from these (keeps serde
-//! confined). Constructed by later S1 tasks (`parse` → `Fragment`, `detect` →
-//! `Candidate`); `#![allow(dead_code)]` bridges the bottom-up build until then.
-#![allow(dead_code)]
+//! confined). `parse` constructs `Fragment`/`Analyzed`, `detect` constructs
+//! `Candidate` (N11: the `dead_code` bridge is no longer needed).
+
+use crate::tree::NormTree;
 
 /// What kind of code element a [`Fragment`] was extracted from.
 ///
@@ -48,10 +49,25 @@ impl Fragment {
     }
 }
 
+/// A fragment paired with its normalized tree.
+///
+/// The tree is working state for TED/detect and is deliberately kept off
+/// [`Fragment`]; the two travel together here instead. It lives in core (N12)
+/// so `detect` consumes only core types — the `parse` adapter constructs it.
+#[derive(Debug, Clone)]
+pub(crate) struct Analyzed {
+    /// The extracted fragment (path/span/counts/kind).
+    pub(crate) fragment: Fragment,
+    /// The fragment's normalized label tree.
+    pub(crate) tree: NormTree,
+}
+
 /// A detected near-duplicate pair of fragments with its similarity score.
 ///
 /// `left`/`right` are assigned by [`Fragment::canonical_key`] order (smaller =
-/// left) so a pair's presentation is traversal-independent.
+/// left) so a pair's presentation is traversal-independent. Node counts are
+/// **not** mirrored here (N8) — the report derives them from
+/// `left.node_count` / `right.node_count`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Candidate {
     /// The canonically-smaller fragment of the pair.
@@ -60,8 +76,4 @@ pub(crate) struct Candidate {
     pub(crate) right: Fragment,
     /// Similarity in `[0, 1]` (`sim = 1 − 2δ/(|T₁|+|T₂|+δ)`).
     pub(crate) score: f64,
-    /// Node count of `left`'s normalized tree.
-    pub(crate) left_nodes: usize,
-    /// Node count of `right`'s normalized tree.
-    pub(crate) right_nodes: usize,
 }
