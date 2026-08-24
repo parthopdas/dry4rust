@@ -24,6 +24,10 @@ clap = { version = "4.5", features = ["derive"] }
 
 # Adapters (confined to their own modules).
 syn = { version = "2.0", features = ["full", "visit", "extra-traits"] }
+# Direct dep solely to enable real line/column locations on `syn`/`proc-macro2`
+# spans *outside* a proc-macro (fragment line spans + parse-error locations).
+# Confined to `parse.rs` alongside `syn`.
+proc-macro2 = { version = "1.0", features = ["span-locations"] }
 ignore = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

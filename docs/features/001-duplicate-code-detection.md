@@ -73,8 +73,8 @@ built binary against fixture trees.
 | #   | Slice | Task | Status | Commit |
 |-----|-------|------|--------|--------|
 | T1  | S1 | Scaffold lib+bin crates (edition 2021), deps (`syn`, `ignore`, `clap`, `thiserror`, `anyhow`, `serde`, `serde_json`), module skeleton, `error` types. No behavior. | Done | 0411756 |
-| T2  | S1 | Domain model (`Fragment`, `Candidate`) + discovery adapter (`ignore` crate: walk `*.rs`, honor `.gitignore`, skip `/target`, normalize paths to `/`). **Unit:** filtering + path normalization. **Integration:** temp tree with `.gitignore`. | Done | (pending) |
-| T3  | S1 | Parse adapter (`syn` → normalized label tree) + fragment extraction for free functions & methods (inherent/trait-impl/trait-default); node counting; identifier/literal canonicalization. **Unit:** source→fragments + node counts. | Pending | - |
+| T2  | S1 | Domain model (`Fragment`, `Candidate`) + discovery adapter (`ignore` crate: walk `*.rs`, honor `.gitignore`, skip `/target`, normalize paths to `/`). **Unit:** filtering + path normalization. **Integration:** temp tree with `.gitignore`. | Done | 9c60aba |
+| T3  | S1 | Parse adapter (`syn` → normalized label tree) + fragment extraction for free functions & methods (inherent/trait-impl/trait-default); node counting; identifier/literal canonicalization. **Unit:** source→fragments + node counts. | Done | (next) |
 | T4  | S1 | TED engine (Zhang–Shasha, unit cost) + similarity normalization (pure, std-only). **Unit:** known small trees→known δ; identical→1.0; disjoint→0.0; symmetry. | Pending | - |
 | T5  | S1 | Detect orchestration: pairwise compare, apply min-lines/min-nodes filters + threshold gate, canonical `(left,right)` ordering, deterministic candidate ordering. **Unit:** filter application + determinism. | Pending | - |
 | T6  | S1 | Report adapter: text (2 dp) + json (raw f64, exact key order) byte-parity. **Unit:** golden-string assertions for both formats. | Pending | - |
@@ -175,3 +175,40 @@ built binary against fixture trees.
 - **N11 (record only):** `hidden(true)` default skips dot-dirs; `canonical_key()` returns a borrow so T5
   should sort via `sort_by(|a,b| a.canonical_key().cmp(&b.canonical_key()))`; no-args→default `.` is a T7
   concern; remove `model.rs` `#![allow(dead_code)]` by end of S1.
+
+### T3 review notes (Anders — APPROVE-WITH-NOTES; nothing blocked T4)
+
+T3 verified PASS by Bhaskar (full gate, 29 tests) after two over-normalization fix rounds (initial
+structural-marker rewrite, then one-sided ranges + async capture + a dishonest `Expr::Infer` test).
+- **N12 (dependency flow, decide before T5 — most important):** `Extracted{fragment,tree}` lives in the
+  `parse` adapter, but its natural consumer is core `detect` — that would make **core import an adapter**,
+  violating the one hard layering rule. Move the pairing type into core (`model`) with `parse` constructing
+  it, or have `detect` take `(&Fragment, &NormTree)` pairs. Cheap now, structural later.
+- **N13 (contract wording vs behavior):** types are erased everywhere (`Param`, `ReturnType` presence-only,
+  `as T`, `PatType`, turbofish) but A6/R3 + `tree.rs` doc say only "identifiers and literal values". Amend
+  wording to "identifiers, **types**, and literal values" so the frozen text matches frozen behavior.
+- **N14 (asymmetry — product decision):** block flavors are preserved but `fn` qualifiers are not —
+  `async fn`/`const fn`/`unsafe fn` and receiver form (`self`/`&self`/`&mut self`) lower identically.
+  Decide: preserve (flags on `Label::Function` / receiver-param label) or declare out of scope.
+- **N15 (statement semicolon — product decision):** `Stmt::Expr(expr, semi)` drops the semi, so `{ x }` and
+  `{ x; }` (value vs unit) lower identically. Preserve or record as a known limitation beside macros.
+- **N16 (comment vs code):** `Label::Item` doc says a nested item "is a fragment in its own right", but
+  `collect_items` never descends into fn bodies, so an inner `fn`/in-body `impl` is never extracted. Fix at
+  T8 or correct the comment now.
+- **N17 (T4 design constraint):** Zhang–Shasha needs post-order + leftmost-leaf-descendant + keyroot arrays;
+  derive them **once per fragment** (cached with the tree), not per pair — O(n²) pairs make per-pair
+  flattening dominate. `NormTree` is a fine source of truth. Add a `node_count == post_order.len()` invariant
+  test at T4.
+- **N18 (typing):** `Binary(&'static str)`/`Unary(&'static str)` with `_ => "?"` is a stringly-typed hole that
+  silently aliases future operators. Prefer small `BinOpKind`/`UnOpKind` enums — restores `Copy`, gives
+  compiler exhaustiveness, lets `Label` derive `Hash` for T4 memo keys.
+- **N19 (precision risk — feeds D5):** macro-as-leaf cuts both ways for the gate — macro-heavy fragments can
+  shrink below `--min-nodes 20` (false negatives) while unrelated macro-heavy bodies look identical (false
+  positives). Explicit input to D5 threshold calibration.
+- **N20 (robustness, low priority):** `lower_expr`/`lower_pat`/`node_count` + `NormTree`'s recursive `Drop`
+  are unbounded-depth recursion on a lib path; pathological nesting aborts. `syn` likely fails first — record
+  only, don't pre-optimize.
+
+Anders also re-scoped priors: **N8** resolve at **T5** (not T6 — where `Candidate` is first built);
+**N10** decide by T6 (diagnostics or delete); **N11** on track (dead_code allows fall out once T5 wires
+`parse → detect`).
