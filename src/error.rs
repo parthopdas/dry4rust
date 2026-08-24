@@ -28,6 +28,15 @@ pub enum Error {
         /// Human-readable description of the parse failure.
         message: String,
     },
+
+    /// The report could not be serialized for output.
+    #[error("failed to render report: {message}")]
+    Render {
+        /// Human-readable description of the serialization failure. The
+        /// underlying `serde_json` error stays confined to the `report`
+        /// adapter and is carried here as a plain message.
+        message: String,
+    },
 }
 
 /// Convenience alias for results returned by this library.

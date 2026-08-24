@@ -10,13 +10,16 @@
 //! syntactic categories we preserve (mirroring dry4go's preserved list). The
 //! rule is exact and one-directional:
 //!
-//! > **Only identifiers (paths, local names, field/method/selector names) and
-//! > literal *values* are normalized away. Every other syntactic distinction —
-//! > anything that can change what the program means — must change the tree.**
+//! > **Only identifiers (paths, local names, field/method/selector names),
+//! > *types*, and literal *values* are normalized away. Every other syntactic
+//! > distinction — anything that can change what the program means — must
+//! > change the tree.**
 //!
 //! So every path/identifier collapses to [`Label::Path`] and every literal to
-//! [`Label::Literal`] regardless of name or value (this is what lets renamed
-//! Type-2 clones lower to *equal* trees), while operators, arity, statement
+//! [`Label::Literal`] regardless of name or value, and types are erased
+//! wherever they appear ([`Label::Param`], [`Label::ReturnType`] as
+//! presence-only, `as T` casts, [`Label::PatType`]) — this is what lets renamed
+//! Type-2 clones lower to *equal* trees — while operators, arity, statement
 //! order, control flow, mutability, block flavor, range shape and pattern shape
 //! are all preserved and keep genuinely different code apart.
 //!
@@ -84,7 +87,7 @@ pub(crate) enum Delimiter {
 /// A structural node kind — the preserved Rust syntactic categories.
 ///
 /// Identifiers and literals are canonicalized to [`Label::Path`] /
-/// [`Label::Literal`]; structure (arity, statement order, control flow,
+/// [`Label::Literal`] and types are erased; structure (arity, statement order, control flow,
 /// operators, mutability, block flavor, pattern shape) is preserved. Free
 /// functions and methods share [`Label::Function`] so an inherent method and an
 /// equivalent free function lower to the same shape — the `model::FragmentKind`
@@ -109,8 +112,8 @@ pub(crate) enum Label {
     /// `else` diverge exprs.
     Let,
     /// An item nested inside a body (e.g. an inner `fn`). Its interior is not
-    /// lowered — a nested item is a fragment in its own right, not part of the
-    /// enclosing body's shape.
+    /// lowered — it is not part of the enclosing body's shape. Such an in-body
+    /// item is also not extracted as a fragment of its own; that is a non-goal.
     Item,
 
     // --- Control flow ---

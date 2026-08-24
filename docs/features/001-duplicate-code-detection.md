@@ -76,8 +76,8 @@ built binary against fixture trees.
 | T2  | S1 | Domain model (`Fragment`, `Candidate`) + discovery adapter (`ignore` crate: walk `*.rs`, honor `.gitignore`, skip `/target`, normalize paths to `/`). **Unit:** filtering + path normalization. **Integration:** temp tree with `.gitignore`. | Done | 9c60aba |
 | T3  | S1 | Parse adapter (`syn` → normalized label tree) + fragment extraction for free functions & methods (inherent/trait-impl/trait-default); node counting; identifier/literal canonicalization. **Unit:** source→fragments + node counts. | Done | 4c55c8f |
 | T4  | S1 | TED engine (Zhang–Shasha, unit cost) + similarity normalization (pure, std-only). **Unit:** known small trees→known δ; identical→1.0; disjoint→0.0; symmetry. | Done | 411b0a5 |
-| T5  | S1 | Detect orchestration: pairwise compare, apply min-lines/min-nodes filters + threshold gate, canonical `(left,right)` ordering, deterministic candidate ordering. **Unit:** filter application + determinism. | Done | (next) |
-| T6  | S1 | Report adapter: text (2 dp) + json (raw f64, exact key order) byte-parity. **Unit:** golden-string assertions for both formats. | Pending | - |
+| T5  | S1 | Detect orchestration: pairwise compare, apply min-lines/min-nodes filters + threshold gate, canonical `(left,right)` ordering, deterministic candidate ordering. **Unit:** filter application + determinism. | Done | 4570f12 |
+| T6  | S1 | Report adapter: text (2 dp) + json (raw f64, exact key order) byte-parity. **Unit:** golden-string assertions for both formats. | Done | (next) |
 | T7  | S1 | CLI wiring (`clap`): flags/aliases, TED defaults, format selection, `anyhow` error mapping, exit 0 on success / non-zero on usage+internal. **Integration:** run binary on fixture dir, assert text & json stdout. | Pending | - |
 | T8  | S2 | Extend extraction to `impl` block bodies, closures, free `{}` blocks. **Unit:** nested-fragment extraction + node counts. | Pending | - |
 | T9  | S2 | Containment-dedup policy (maximal-parent-wins, both-sides; identical-span dedup; deterministic tie-break). **Unit:** both-sided suppression; one-sided keep; identical-span dedup. | Pending | - |
@@ -290,3 +290,51 @@ allows justified until T7). End-to-end Type-2 `score==1.0` claim now proven.
 Open-notes ledger after T5: **N10** (FragmentKind — decide at T6: stderr diagnostic or delete), **N13/N16**
 (cheap doc fixes at T6), **N14/N15/N23/N27** (product/scoring decisions before D5), **N28/N29/N30** (T7),
 **N31/N32/N33/N34** (record/T11/T12).
+
+### T6 review notes (Anders — APPROVE-WITH-NOTES; nothing blocked T7)
+
+T6 verified PASS by Bhaskar (full gate, 63 tests; byte-parity text+JSON golden strings). Closed: **N4**
+(DTOs private to report, model serde-free), **N13** (tree.rs contract now "identifiers, types, and literal
+values"), **N16** (Item non-extraction stated as a non-goal, not T8). `render(&[Candidate], Format) ->
+Result<String>`; `Error::Render{message}` added (serde_json error folded to String — same confinement
+pattern as `Error::Parse`).
+- **N10 — DECIDED (driver ratifies Anders' option c): KEEP `FragmentKind`.** It IS consumed — `parse` tests
+  assert `Vec<FragmentKind>` to pin Function vs Method extraction (and T8 quadruples extraction complexity;
+  D7 de-scope lever filters on it). At T7, instead of a module-level allow, put a NARROW field-level
+  `#[allow(dead_code)]` on `Fragment::kind` + `FragmentKind` with the justification "extraction provenance:
+  asserted by parse tests, deliberately not emitted (dry4go parity has no kind field); D7 filters on it".
+  This lets N11 complete honestly (all module-level allows off at T7).
+- **N3 — RE-RAISED (take or close at T7):** `Error` has grown 2→3 variants; it's public. Add
+  `#[non_exhaustive]` (one attribute) at T7 before the surface stabilizes, or explicitly close as "won't do,
+  single-consumer crate".
+- **N36 (T7 — do first, façade):** `render`/`Format`/`detect`/`parse` are all `pub(crate)`; `main` is a
+  SEPARATE crate and can't call them (`lib.rs` exports only `error` + `discover_rust_files`). Widen the public
+  surface as ONE façade: a single `pub fn run(...) -> error::Result<String>` in `lib.rs` owning discover →
+  parse → detect → render, with `Format` + an options struct + `Error` the only other public items. Keep
+  `Candidate`/`Fragment` `pub(crate)`. Better integration seam than spawning the binary.
+- **N37 (T7 — confinement trap):** do NOT `#[derive(clap::ValueEnum)]` on `report::Format` (leaks clap into
+  the report adapter, breaks A5 like serde would have). Define a separate `ValueEnum` in `cli.rs`, map onto
+  `report::Format`; the mapping also folds `--json`/`--text` aliases.
+- **N38 (T7 — output discipline):** `render` already emits the exact trailing newline, so `main` must
+  `write_all` on a LOCKED stdout, never `println!` (double newline; `println!` also panics on EPIPE →
+  `dry4rust | head` exits 101). Treat `BrokenPipe` as quiet success. One lock + one write = atomic stdout,
+  no stderr interleaving.
+- **N39 — DECIDED (driver call, grounded in A8): SKIP + DIAGNOSTIC + EXIT 0.** R4 (unparsable/unreadable file
+  policy) had no recorded decision; A8 already dictates "pure reporter — always exit 0 on a successful run;
+  non-zero reserved for usage/internal errors". So at T7: a per-file `Error::Parse`/`Error::Io` is caught in
+  the pipeline, a DETERMINISTIC one-line diagnostic goes to stderr, the run continues and exits 0. stdout
+  bytes must be unaffected by a skipped file; skip set + message order must be deterministic (R6). Reserve
+  non-zero for usage errors (bad flag / out-of-range threshold) and whole-run failures. (Flagged to human.)
+- **N40 (record only):** `render_json` materializes `Vec<CandidateDto>` before serializing; irrelevant at
+  post-gate cardinality — noted so nobody "optimizes" it and disturbs the byte contract.
+- **N23 — DECIDED for S1 (driver call): ACCEPT + DOCUMENT; revisit at S2/T8.** The unbounded n·m TED matrix
+  only bites with large fragments; S1 extracts functions/methods (typically small), so no node ceiling in S1
+  (YAGNI). It becomes real when T8 adds `impl` bodies — decide the ceiling (option a: upstream skip+stderr
+  per N30) THEN. Cheap S1-agnostic win available anytime: TED cells fit in `u32` (δ ≤ n+m). (Flagged to
+  human.)
+
+Open-notes ledger after T6: **N3** (T7), **N14/N15/N27** (scoring/product, before D5), **N23** (revisit at
+T8), **N28/N29/N30/N36/N37/N38/N39** (T7 — implement now), **N31/N32/N33/N34/N40** (record/T11/T12).
+T7 forces: N36 (façade), N37 (Format mapping), N38 (stdout write), N39 (R4 policy — decided), N28
+(threshold range), N29 (defaults in clap), N11 completion (module-level allows off → N10 field-level allow),
+N3 (non_exhaustive).

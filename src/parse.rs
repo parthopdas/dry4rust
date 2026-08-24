@@ -171,8 +171,12 @@ fn lower_stmt(stmt: &Stmt) -> NormTree {
         }
         Stmt::Expr(expr, _) => lower_expr(expr),
         Stmt::Macro(m) => NormTree::leaf(macro_label(&m.mac)),
-        // A nested item (e.g. an inner `fn`) is a fragment in its own right, not
-        // part of the enclosing body's shape, so its interior is not lowered.
+        // A nested item (e.g. an inner `fn`) is not part of the enclosing
+        // body's shape, so its interior is not lowered. It is also not
+        // extracted as a fragment of its own — `collect_items` does not
+        // descend into function bodies — and that is a non-goal, not deferred
+        // work. (T8 extends granularity to impl bodies, closures and free
+        // blocks; it does not cover in-body nested items.)
         Stmt::Item(_) => NormTree::leaf(Label::Item),
     }
 }
