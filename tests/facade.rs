@@ -180,7 +180,7 @@ fn crlf_and_lf_fixtures_produce_byte_identical_reports() {
     write(crlf.path(), "a.rs", &LEFT.replace('\n', "\r\n"));
     write(crlf.path(), "b.rs", &RIGHT.replace('\n', "\r\n"));
 
-    for format in [Format::Text, Format::Json] {
+    for (format, marker) in [(Format::Text, "DUPLICATE"), (Format::Json, "\"score\"")] {
         // The only legitimate difference is the temp-dir prefix; strip it so
         // the remaining bytes must match exactly.
         let from_lf = run_on(lf.path(), format)
@@ -190,6 +190,13 @@ fn crlf_and_lf_fixtures_produce_byte_identical_reports() {
             .report
             .replace(&prefix(crlf.path()), "");
 
+        // Non-vacuous locally: the LF side must actually report the finding, so
+        // a both-sides-empty regression cannot pass this test (N51).
+        assert!(
+            from_lf.contains(marker),
+            "the LF side reported nothing for {format:?}: {from_lf}"
+        );
+
         assert_eq!(
             from_lf, from_crlf,
             "line endings changed the {format:?} report"
@@ -198,30 +205,28 @@ fn crlf_and_lf_fixtures_produce_byte_identical_reports() {
 }
 
 /// S1 acceptance: `.gitignore`d files and `target/` are skipped end-to-end
-/// through the façade, not just inside the discovery adapter (N44).
+/// through the façade, not just inside the discovery adapter (N44). Since
+/// `discover_rust_files` is crate-private (N49), this is the integration-level
+/// evidence for the skip rules.
 #[test]
 fn gitignored_and_target_copies_are_skipped_through_the_facade() {
     let dir = duplicate_pair_tree();
+    let clean = run_on(dir.path(), Format::Text);
+
     // Extra copies of `a.rs` that must never be discovered — each would
     // otherwise pair with `a.rs` and `b.rs` and add DUPLICATE blocks.
     write(dir.path(), ".gitignore", "ignored.rs\n");
     write(dir.path(), "ignored.rs", LEFT);
     write(dir.path(), "target/debug/copy.rs", LEFT);
+    // A non-`.rs` file is not scanned either.
+    write(dir.path(), "README.md", "# docs\n");
 
     let output = run_on(dir.path(), Format::Text);
 
-    assert_eq!(
-        output.report.matches("DUPLICATE").count(),
-        1,
-        "got: {}",
-        output.report
-    );
-    assert!(
-        !output.report.contains("ignored.rs"),
-        "got: {}",
-        output.report
-    );
-    assert!(!output.report.contains("target/"), "got: {}", output.report);
+    // Strictly stronger than a shape check: the report bytes are exactly the
+    // clean baseline's (N51).
+    assert_eq!(output.report, clean.report);
+    assert!(output.diagnostics.is_empty());
 }
 
 #[test]

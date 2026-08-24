@@ -187,6 +187,8 @@ fn a_whole_run_failure_exits_one_with_empty_stdout() {
 
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
+    // An exit 1 with no diagnostic would be useless — pin the message (N51).
+    assert!(!output.stderr.is_empty(), "expected a stderr diagnostic");
 }
 
 #[test]

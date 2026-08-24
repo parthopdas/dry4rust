@@ -3,10 +3,11 @@
 //!
 //! The compute seam between `parse` (which produces [`Analyzed`]) and `report`:
 //! fragments below the `--min-lines`/`--min-nodes` floors are dropped first,
-//! every surviving tree is prepared **once** (N17), each remaining pair is
-//! scored with `ted` + `similarity` composed here (N21), and pairs at or above
-//! the threshold become [`Candidate`]s ordered by canonical `(left, right)`
-//! key. Containment/identical-span dedup is a separate policy (`dedup`).
+//! every surviving tree is prepared **once** (N17), each remaining pair that
+//! the size-ratio pre-filter admits is scored with `ted` + `similarity`
+//! composed here (N21), and pairs at or above the threshold become
+//! [`Candidate`]s ordered by canonical `(left, right)` key.
+//! Containment/identical-span dedup is a separate policy (`dedup`).
 
 use crate::model::{Analyzed, Candidate, Fragment};
 use crate::similarity::similarity;
@@ -29,12 +30,21 @@ pub(crate) struct DetectOptions {
 ///
 /// Self-pairs are never produced and each unordered pair is scored once. The
 /// result is a pure function of the input set — input order does not affect it.
+///
+/// Fragments are walked in **node-count order** so the size-ratio pre-filter
+/// ([`size_ratio_admits`]) can `break` the inner loop instead of testing every
+/// pair (N53): with counts ascending, once a partner is too large for the
+/// current fragment, every later partner is larger still. Iteration order does
+/// not reach the output — the final canonical `(left, right)` sort does.
 pub(crate) fn detect(analyzed: &[Analyzed], opts: &DetectOptions) -> Vec<Candidate> {
     let mut kept: Vec<&Analyzed> = analyzed
         .iter()
         .filter(|item| passes_floors(&item.fragment, opts))
         .collect();
-    kept.sort_by(|a, b| a.fragment.canonical_key().cmp(&b.fragment.canonical_key()));
+    kept.sort_by(|a, b| {
+        (a.fragment.node_count, a.fragment.canonical_key())
+            .cmp(&(b.fragment.node_count, b.fragment.canonical_key()))
+    });
 
     // Prepare once per fragment, not once per pair (N17).
     let prepared: Vec<PreparedTree> = kept
@@ -45,6 +55,13 @@ pub(crate) fn detect(analyzed: &[Analyzed], opts: &DetectOptions) -> Vec<Candida
     let mut candidates = Vec::new();
     for (index, (item_a, tree_a)) in kept.iter().zip(&prepared).enumerate() {
         for (item_b, tree_b) in kept.iter().zip(&prepared).skip(index + 1) {
+            if !size_ratio_admits(
+                item_a.fragment.node_count,
+                item_b.fragment.node_count,
+                opts.threshold,
+            ) {
+                break;
+            }
             let delta = ted::distance(tree_a, tree_b);
             let score = similarity(
                 delta,
@@ -68,6 +85,55 @@ pub(crate) fn detect(analyzed: &[Analyzed], opts: &DetectOptions) -> Vec<Candida
             .cmp(&(b.left.canonical_key(), b.right.canonical_key()))
     });
     candidates
+}
+
+/// Whether a pair's node counts still allow it to reach `threshold` — the
+/// admissible size-ratio pre-filter (T11).
+///
+/// With unit costs, aligning two trees costs at least their size difference
+/// (`δ ≥ max − min`), and `similarity` falls monotonically in δ. The pair's
+/// best possible score is therefore the score it would get at that minimal
+/// δ, and a pair whose best possible score is below the threshold cannot pass
+/// the gate — its TED can be skipped.
+///
+/// **The bound is evaluated by calling the frozen `similarity` itself** at
+/// `δ = max − min`, rather than by comparing the algebraically-equal ratio
+/// `min/max` against the threshold. This supersedes the literal N52b form
+/// (`min >= threshold * max`) while keeping its intent — never prune on
+/// equality — because that form is *not* conservative under f64 rounding:
+/// `threshold * (max as f64)` is a rounded product that can land just above
+/// `min as f64` for a pair the real gate accepts (e.g. `min = 212`,
+/// `max = 685`, `threshold = similarity(473, 212, 685)`), pruning a genuine
+/// match. Calling `similarity` removes the discrepancy at the root instead of
+/// papering over it with an epsilon:
+///
+/// - The comparison here (`bound >= threshold`) and the gate in [`detect`]
+///   (`score >= threshold`) evaluate the *same* function on the same code
+///   path, so the boundary is bit-identical rather than merely close.
+/// - `similarity` is weakly monotone non-increasing in δ in f64, not just in
+///   exact arithmetic: `2δ` and `min + max + δ` are exactly representable for
+///   every reachable node count, so the division is the correctly-rounded
+///   image of an exactly-increasing quantity, and correct rounding, `1.0 - r`
+///   and `clamp` are all monotone. Hence `score = similarity(δ, ..) <=
+///   similarity(max − min, ..) = bound` for every δ ≥ max − min.
+/// - Therefore `score >= threshold` implies `bound >= threshold`: a pair the
+///   gate would accept is always admitted, for **all** node counts and
+///   thresholds, with no slack term to justify. The converse is allowed — a
+///   false admit merely pays for a TED that then fails the gate.
+///
+/// The `max == 0` case needs no special guard any more: `similarity(0, 0, 0)`
+/// takes the frozen function's own `denominator == 0` branch and returns
+/// `1.0`, admitting two empty trees at every threshold in `0.0..=1.0` (N52).
+/// That case is *not* production-reachable: [`crate::parse::build`] always
+/// sets `Fragment::node_count` from `NormTree::node_count`, which is
+/// `1 + descendants` and so never zero, and `--min-nodes 0` only relaxes a
+/// filter — it cannot conjure a zero-node fragment. Zero reaches this
+/// function only by calling it (or `similarity`) directly, so the absence of
+/// a guard is a statement about the predicate's contract, not about the CLI.
+fn size_ratio_admits(nodes_a: usize, nodes_b: usize, threshold: f64) -> bool {
+    let min = nodes_a.min(nodes_b);
+    let max = nodes_a.max(nodes_b);
+    similarity(max - min, min, max) >= threshold
 }
 
 /// Whether a fragment clears both size floors.
@@ -324,5 +390,263 @@ mod tests {
         let parsed = parse::extract("mixed.rs", source).expect("fixture should parse");
         assert_eq!(parsed.len(), 2);
         assert!(detect(&parsed, &opts(0.75)).is_empty());
+    }
+
+    // ---- T11: the admissible size-ratio pre-filter ----
+
+    /// A tree of exactly `nodes` nodes: a `Function` root over a plain block
+    /// filled with leaves (`nodes >= 2`).
+    fn tree_of(nodes: usize) -> NormTree {
+        let leaves = (0..nodes - 2).map(|_| NormTree::leaf(Label::Let)).collect();
+        NormTree::new(
+            Label::Function,
+            vec![NormTree::new(Label::Block(BlockKind::Plain), leaves)],
+        )
+    }
+
+    /// The pre-filter's claim: `sim` can never exceed `min/max`. Checked
+    /// against the real TED + similarity composition, not against the algebra.
+    #[test]
+    fn similarity_never_exceeds_the_size_ratio_bound() {
+        for nodes_a in 2..12usize {
+            for nodes_b in 2..12usize {
+                let (a, b) = (tree_of(nodes_a), tree_of(nodes_b));
+                let score = similarity(
+                    ted::distance(&PreparedTree::new(&a), &PreparedTree::new(&b)),
+                    nodes_a,
+                    nodes_b,
+                );
+                let bound = nodes_a.min(nodes_b) as f64 / nodes_a.max(nodes_b) as f64;
+                assert!(
+                    score <= bound + 1e-12,
+                    "{nodes_a}x{nodes_b}: score {score} exceeds bound {bound}"
+                );
+            }
+        }
+    }
+
+    /// Prune-soundness: whenever the predicate prunes, the pair's best possible
+    /// score is genuinely below the threshold — so no would-be match is lost.
+    #[test]
+    fn a_pruned_pair_could_never_have_passed_the_threshold() {
+        for nodes_a in 2..12usize {
+            for nodes_b in 2..12usize {
+                for threshold in [0.0, 0.25, 0.5, 0.75, 0.9, 1.0] {
+                    if size_ratio_admits(nodes_a, nodes_b, threshold) {
+                        continue;
+                    }
+                    let (a, b) = (tree_of(nodes_a), tree_of(nodes_b));
+                    let score = similarity(
+                        ted::distance(&PreparedTree::new(&a), &PreparedTree::new(&b)),
+                        nodes_a,
+                        nodes_b,
+                    );
+                    assert!(
+                        score < threshold,
+                        "{nodes_a}x{nodes_b} pruned at {threshold} but scores {score}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_predicate_keeps_a_pair_whose_bound_equals_the_threshold() {
+        // 3/4 == 0.75 exactly: the gate is `>=`, so this pair must survive.
+        assert!(size_ratio_admits(3, 4, 0.75));
+        assert!(size_ratio_admits(4, 3, 0.75));
+        assert!(size_ratio_admits(10, 10, 1.0));
+        // Just below the boundary is prunable.
+        assert!(!size_ratio_admits(2, 4, 0.75));
+        assert!(!size_ratio_admits(9, 10, 1.0));
+    }
+
+    #[test]
+    fn the_predicate_is_symmetric_and_admits_everything_at_threshold_zero() {
+        for (a, b) in [(1usize, 9usize), (4, 5), (7, 7), (0, 6)] {
+            assert_eq!(
+                size_ratio_admits(a, b, 0.6),
+                size_ratio_admits(b, a, 0.6),
+                "{a}x{b}"
+            );
+            assert!(size_ratio_admits(a, b, 0.0), "{a}x{b} at threshold 0");
+        }
+    }
+
+    /// N52, **defensive/synthetic coverage of the predicate's contract** — not
+    /// a production-reachable CLI path. No parse path can yield a zero-node
+    /// fragment: `parse::build` sets `Fragment::node_count` from
+    /// `NormTree::node_count`, which is `1 + descendants`, and `--min-nodes 0`
+    /// merely relaxes a filter. The zero case is reachable only by calling the
+    /// predicate (or `similarity`) directly, as this test does. What it pins is
+    /// that the predicate does not divide by `max` itself and instead defers to
+    /// the frozen `similarity`'s `denominator == 0` branch: strip that branch
+    /// and `similarity(0, 0, 0)` is `NaN`, every comparison below goes false,
+    /// and the first assertion fails.
+    #[test]
+    fn the_predicate_contract_admits_zero_node_inputs_defensively() {
+        for threshold in [0.0, 0.5, 0.75, 1.0] {
+            assert!(size_ratio_admits(0, 0, threshold));
+        }
+        // A zero-node input against a real fragment cannot score above 0.
+        assert!(!size_ratio_admits(0, 5, 0.75));
+        assert_eq!(similarity(5, 0, 5), 0.0);
+    }
+
+    /// Bhaskar's counterexample to the multiplication form of the predicate:
+    /// the smaller tree embeds in the larger, so δ is exactly `max − min` and
+    /// the pair scores exactly the threshold — the gate is `>=`, so it is a
+    /// real match and must never be pruned. The old
+    /// `min >= threshold * max` form computed `0.30948905109489055 * 685.0
+    /// == 212.00000000000003` and pruned it.
+    #[test]
+    fn the_predicate_admits_a_pair_the_gate_accepts_only_by_equality() {
+        let (min, max, delta) = (212usize, 685usize, 473usize);
+        let threshold = similarity(delta, min, max);
+
+        // The rounded product the superseded form would have compared against.
+        assert!(
+            (min as f64) < threshold * (max as f64),
+            "the multiplication form must still be the unsafe one"
+        );
+        assert!(
+            size_ratio_admits(min, max, threshold),
+            "a pair scoring exactly the threshold must be admitted"
+        );
+        assert!(size_ratio_admits(max, min, threshold));
+
+        // …and the pair really does reach that score end to end, so pruning it
+        // would have dropped a genuine match.
+        let (a, b) = (tree_of(min), tree_of(max));
+        let scored = similarity(
+            ted::distance(&PreparedTree::new(&a), &PreparedTree::new(&b)),
+            min,
+            max,
+        );
+        assert_eq!(scored, threshold);
+
+        let gates = DetectOptions {
+            threshold,
+            min_lines: 0,
+            min_nodes: 0,
+        };
+        let pair = [
+            analyzed("small.rs", 1, 9, a),
+            analyzed("large.rs", 20, 40, b),
+        ];
+        let found = detect(&pair, &gates);
+        assert_eq!(found.len(), 1, "the candidate is retained at equality");
+        assert_eq!(found, reference_detect(&pair, &gates));
+    }
+
+    /// The unfiltered baseline: score every pair, no pre-filter, no ordering
+    /// trick. `detect` must agree with it exactly (T11 is an optimization).
+    fn reference_detect(analyzed: &[Analyzed], opts: &DetectOptions) -> Vec<Candidate> {
+        let kept: Vec<&Analyzed> = analyzed
+            .iter()
+            .filter(|item| passes_floors(&item.fragment, opts))
+            .collect();
+
+        let mut candidates = Vec::new();
+        for (index, item_a) in kept.iter().enumerate() {
+            for item_b in kept.iter().skip(index + 1) {
+                let delta = ted::distance(
+                    &PreparedTree::new(&item_a.tree),
+                    &PreparedTree::new(&item_b.tree),
+                );
+                let score = similarity(
+                    delta,
+                    item_a.fragment.node_count,
+                    item_b.fragment.node_count,
+                );
+                if score >= opts.threshold {
+                    let (left, right) = canonical_sides(&item_a.fragment, &item_b.fragment);
+                    candidates.push(Candidate {
+                        left: left.clone(),
+                        right: right.clone(),
+                        score,
+                    });
+                }
+            }
+        }
+        candidates.sort_by(|a, b| {
+            (a.left.canonical_key(), a.right.canonical_key())
+                .cmp(&(b.left.canonical_key(), b.right.canonical_key()))
+        });
+        candidates
+    }
+
+    #[test]
+    fn filtered_detection_is_identical_to_the_unfiltered_reference() {
+        let source = r#"
+            fn sum_positive(values: &[i32]) -> i32 {
+                let mut total = 0;
+                for value in values {
+                    if *value > 0 {
+                        total += *value;
+                    }
+                }
+                total
+            }
+
+            fn add_upbeat(numbers: &[i32]) -> i32 {
+                let mut running = 7;
+                for number in numbers {
+                    if *number > 3 {
+                        running += *number;
+                    }
+                }
+                running
+            }
+
+            fn describe(flag: bool) -> String {
+                match flag {
+                    true => String::from("yes"),
+                    false => String::from("no"),
+                }
+            }
+
+            fn tiny() -> u8 { 1 }
+        "#;
+        let mut fixtures = parse::extract("fixtures.rs", source).expect("fixture should parse");
+        // Plus synthetic fragments spanning a wide size range, where the
+        // pre-filter actually bites.
+        for (index, nodes) in [2usize, 3, 5, 8, 13, 21].into_iter().enumerate() {
+            fixtures.push(analyzed(
+                "synthetic.rs",
+                index * 10 + 1,
+                index * 10 + 9,
+                tree_of(nodes),
+            ));
+        }
+
+        // Round thresholds plus awkward, non-exactly-representable ones taken
+        // from `similarity` itself at the fixtures' own sizes — the class the
+        // multiplication form of the predicate mis-pruned.
+        let awkward = [
+            similarity(19, 2, 21),
+            similarity(13, 8, 21),
+            similarity(8, 5, 13),
+            similarity(5, 3, 8),
+            similarity(3, 2, 5),
+            similarity(1, 2, 3),
+            similarity(4, 8, 13),
+            similarity(7, 13, 21),
+        ];
+        for threshold in [0.0, 0.1, 0.5, 0.75, 0.9, 0.99, 1.0]
+            .into_iter()
+            .chain(awkward)
+        {
+            let gates = DetectOptions {
+                threshold,
+                min_lines: 0,
+                min_nodes: 0,
+            };
+            assert_eq!(
+                detect(&fixtures, &gates),
+                reference_detect(&fixtures, &gates),
+                "pre-filter changed the result at threshold {threshold}"
+            );
+        }
     }
 }

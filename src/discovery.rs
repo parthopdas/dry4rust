@@ -15,7 +15,7 @@ use crate::error::{Error, Result};
 /// included as-is. Every returned path is normalized to `/`-separated form and
 /// the list is sorted and de-duplicated for deterministic, cross-OS-stable
 /// output.
-pub fn discover_rust_files(paths: &[PathBuf]) -> Result<Vec<String>> {
+pub(crate) fn discover_rust_files(paths: &[PathBuf]) -> Result<Vec<String>> {
     let mut files: Vec<String> = Vec::new();
     let mut dirs: Vec<&PathBuf> = Vec::new();
 

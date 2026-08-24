@@ -32,9 +32,11 @@ lib; dependencies flow **adapters → core**, never the reverse.
   - `discovery` — file walking via the `ignore` crate (**`ignore` confined here**).
   - `report` — text/json rendering via `serde`/`serde_json` (**serialization confined here**).
 - **Composition root (`lib`):** the crate root wires the pipeline together — it is the only place that
-  reads files from disk (discover → `read_to_string` → parse → detect → render) and exposes the single
-  public façade `run(&RunOptions) -> Result<RunOutput>`. It owns the per-file skip-with-diagnostic policy;
-  everything below it stays IO-free.
+  reads file **contents** from disk (discover → `read_to_string` → parse → detect → render) and exposes
+  the crate's only public façade `run(&RunOptions) -> Result<RunOutput>` (plus `RunOptions`/`RunOutput`/
+  `Format` and the `error` types; everything else is `pub(crate)`). It owns the per-file
+  skip-with-diagnostic policy. Below it, **core** is IO-free; `discovery` is the only other module that
+  touches the filesystem (traversal).
 - **Bin crate:** `cli` (clap parsing; **`clap` confined here**) + `main` (`anyhow` wiring, exit codes).
 
 Rule: core modules import no third-party crate and perform no IO; adapters depend on core; the bin
@@ -71,6 +73,9 @@ depends on lib. This keeps the scoring math testable in isolation and the TED en
   stable across OS and across runs.
 - **Error handling:** typed `thiserror` errors in the lib (no `unwrap`/`expect`/`panic!` on reachable
   paths); the bin bubbles via `anyhow` and maps to a non-zero exit only for usage/internal failures.
+  Exit-code contract (pinned by `tests/cli.rs`): **0** — any successful run, including "no duplicates"
+  and runs that skipped files; **1** — whole-run failure (e.g. an unreadable root); **2** — `clap` usage
+  error.
 - **Config:** all behavior via CLI flags; no secrets, no network, no persistence.
 - **Performance:** O(n²) pairs × super-quadratic TED is the main scaling risk; mitigated by the node
   floor, the admissible size-ratio pre-filter, and confining TED so it stays swappable.

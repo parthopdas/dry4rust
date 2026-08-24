@@ -7,11 +7,11 @@
 //! - **adapters** (each confines one third-party crate): `parse` (`syn`),
 //!   `discovery` (`ignore`), `report` (`serde`).
 //!
-//! The public surface is one façade (N36) — [`run`] with [`RunOptions`] /
-//! [`RunOutput`] / [`Format`], plus [`error`] and [`discover_rust_files`].
-//! Everything else (`Candidate`, `Fragment`, `detect`, `parse`, `render`, …)
-//! stays `pub(crate)`: the binary is a separate crate and drives the whole
-//! pipeline through [`run`] alone.
+//! The public surface is one façade (N36): [`run`] with [`RunOptions`] /
+//! [`RunOutput`] / [`Format`], plus the [`error`] types. Everything else
+//! (`Candidate`, `Fragment`, `discover_rust_files`, `detect`, `parse`,
+//! `render`, …) stays `pub(crate)`: the binary is a separate crate and drives
+//! the whole pipeline through [`run`] alone.
 
 pub mod error;
 
@@ -28,7 +28,6 @@ pub(crate) mod report;
 
 use std::path::PathBuf;
 
-pub use discovery::discover_rust_files;
 pub use report::Format;
 
 use crate::error::{Error, Result};
@@ -73,7 +72,7 @@ pub struct RunOutput {
 /// identical to a run over the same tree without that file. Only a discovery
 /// failure (e.g. an unreadable root) or a rendering failure fails the run.
 pub fn run(options: &RunOptions) -> Result<RunOutput> {
-    let files = discover_rust_files(&options.paths)?;
+    let files = discovery::discover_rust_files(&options.paths)?;
 
     let mut analyzed: Vec<Analyzed> = Vec::new();
     let mut diagnostics: Vec<String> = Vec::new();
