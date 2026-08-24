@@ -78,7 +78,8 @@ built binary against fixture trees.
 | T4  | S1 | TED engine (Zhang–Shasha, unit cost) + similarity normalization (pure, std-only). **Unit:** known small trees→known δ; identical→1.0; disjoint→0.0; symmetry. | Done | 411b0a5 |
 | T5  | S1 | Detect orchestration: pairwise compare, apply min-lines/min-nodes filters + threshold gate, canonical `(left,right)` ordering, deterministic candidate ordering. **Unit:** filter application + determinism. | Done | 4570f12 |
 | T6  | S1 | Report adapter: text (2 dp) + json (raw f64, exact key order) byte-parity. **Unit:** golden-string assertions for both formats. | Done | ffa28a3 |
-| T7  | S1 | CLI wiring (`clap`): flags/aliases, TED defaults, format selection, `anyhow` error mapping, exit 0 on success / non-zero on usage+internal. **Integration:** run binary on fixture dir, assert text & json stdout. | Done | (next) |
+| T7  | S1 | CLI wiring (`clap`): flags/aliases, TED defaults, format selection, `anyhow` error mapping, exit 0 on success / non-zero on usage+internal. **Integration:** run binary on fixture dir, assert text & json stdout. | Done | be5128b |
+| T7b | S1 | Close S1 test gaps before stamping S1 done: **N43** CRLF-invariance (`\n` vs `\r\n` fixture → byte-identical report), **N44** `.gitignore`/`target/` skipping exercised through `run()`, **N45** exit-1 at the binary level. Also **N42** design.md drift (name lib.rs composition-root role). | Pending | - |
 | T8  | S2 | Extend extraction to `impl` block bodies, closures, free `{}` blocks. **Unit:** nested-fragment extraction + node counts. | Pending | - |
 | T9  | S2 | Containment-dedup policy (maximal-parent-wins, both-sides; identical-span dedup; deterministic tie-break). **Unit:** both-sided suppression; one-sided keep; identical-span dedup. | Pending | - |
 | T10 | S2 | **Integration:** fixture with duplicated nested closures/blocks → assert only maximal pairs reported. | Pending | - |
@@ -382,10 +383,16 @@ against current scores calibrates the wrong number.
 **Open ledger after T7:** N14/N15/**N27** (scoring/product, before D5; N27 now blocking) · N23 (revisit at
 T8, jointly w/ T11) · N31/N32/N33/N34/N40 (record/T11/T12) · N41–N47 (see above; N43/N44 before stamping S1).
 
-**Product decisions pending (human) — surfaced at pause:**
-1. Slice reorder: T11 before T8? (Anders recommends yes — admissible, protects T8 from R1/N23.)
-2. N23 at T8: node ceiling (skip+stderr per N30) vs accept-and-document? (alloc-failure aborts — hard edge.)
-3. N27 before D5 — confirm operator enums fixed before threshold calibration.
-4. N14/N15 — `async`/`const`/`unsafe fn` + receiver form, and statement semicolon: preserve or out of scope?
-5. Test-code noise: v1 reports everything (Anders recommends, matches dry4go) vs `--exclude` graduates from D2?
-6. (Housekeeping) Land N43/N44/N45 as a small T7b before stamping S1 fully done.
+**Product decisions — RESOLVED (human confirmed 2026-08-24, "all as per Anders' reco"):**
+1. **Slice reorder: YES — T11 before T8.** New order: **T7b → T11 → T8 → T9/T10 → T12.** Prefilter is
+   admissible (identical results), so it lands before T8 widens the size spread.
+2. **N23 at T8: skip + stderr diagnostic (per N30).** Oversized-node pair emits a deterministic
+   `warning: skipping …` and is dropped from candidates; run continues, stdout stays deterministic. Take the
+   free N26/N23 `u32`-cell win (δ ≤ n+m) alongside.
+3. **N27: fix BEFORE D5.** Operator fallback `_ => "?"` replaced with distinct `BinOp`/`UnOp` labels so scores
+   reflect real operators before any threshold calibration.
+4. **N14/N15: preserve the distinctions (resolve at the scoring pass, before D5).** Carry `async`/`const`/
+   `unsafe fn` qualifiers + receiver form and statement-terminating semicolon into the tree so they don't
+   collapse into false matches; folded into the same pre-D5 scoring pass as N27.
+5. **Test-code noise: v1 reports everything** (matches dry4go). `--exclude` stays deferred (D2).
+6. **T7b: land N43/N44/N45 before stamping S1 done.** Next task.
