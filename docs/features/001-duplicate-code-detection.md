@@ -74,8 +74,8 @@ built binary against fixture trees.
 |-----|-------|------|--------|--------|
 | T1  | S1 | Scaffold lib+bin crates (edition 2021), deps (`syn`, `ignore`, `clap`, `thiserror`, `anyhow`, `serde`, `serde_json`), module skeleton, `error` types. No behavior. | Done | 0411756 |
 | T2  | S1 | Domain model (`Fragment`, `Candidate`) + discovery adapter (`ignore` crate: walk `*.rs`, honor `.gitignore`, skip `/target`, normalize paths to `/`). **Unit:** filtering + path normalization. **Integration:** temp tree with `.gitignore`. | Done | 9c60aba |
-| T3  | S1 | Parse adapter (`syn` → normalized label tree) + fragment extraction for free functions & methods (inherent/trait-impl/trait-default); node counting; identifier/literal canonicalization. **Unit:** source→fragments + node counts. | Done | (next) |
-| T4  | S1 | TED engine (Zhang–Shasha, unit cost) + similarity normalization (pure, std-only). **Unit:** known small trees→known δ; identical→1.0; disjoint→0.0; symmetry. | Pending | - |
+| T3  | S1 | Parse adapter (`syn` → normalized label tree) + fragment extraction for free functions & methods (inherent/trait-impl/trait-default); node counting; identifier/literal canonicalization. **Unit:** source→fragments + node counts. | Done | 4c55c8f |
+| T4  | S1 | TED engine (Zhang–Shasha, unit cost) + similarity normalization (pure, std-only). **Unit:** known small trees→known δ; identical→1.0; disjoint→0.0; symmetry. | Done | (next) |
 | T5  | S1 | Detect orchestration: pairwise compare, apply min-lines/min-nodes filters + threshold gate, canonical `(left,right)` ordering, deterministic candidate ordering. **Unit:** filter application + determinism. | Pending | - |
 | T6  | S1 | Report adapter: text (2 dp) + json (raw f64, exact key order) byte-parity. **Unit:** golden-string assertions for both formats. | Pending | - |
 | T7  | S1 | CLI wiring (`clap`): flags/aliases, TED defaults, format selection, `anyhow` error mapping, exit 0 on success / non-zero on usage+internal. **Integration:** run binary on fixture dir, assert text & json stdout. | Pending | - |
@@ -212,3 +212,43 @@ structural-marker rewrite, then one-sided ranges + async capture + a dishonest `
 Anders also re-scoped priors: **N8** resolve at **T5** (not T6 — where `Candidate` is first built);
 **N10** decide by T6 (diagnostics or delete); **N11** on track (dead_code allows fall out once T5 wires
 `parse → detect`).
+
+### T4 review notes (Anders — APPROVE-WITH-NOTES; nothing blocked T5)
+
+T4 verified PASS by Bhaskar (full gate, 45 tests). Zhang–Shasha math + all hand-derived fixture δ values
+independently re-derived and confirmed; one similarity `usize`-overflow defect found and fixed (all
+arithmetic now f64). API: `ted::PreparedTree::new/len/…`, `distance`, `distance_trees`;
+`similarity::similarity`, `similarity_prepared`. N17 SATISFIED by `PreparedTree` (per-fragment caching;
+`len()==node_count` invariant tested).
+- **N21 (layering — take at T5):** `similarity.rs` is the frozen-formula module (A2/R3); `similarity_prepared`
+  couples it to `PreparedTree`, so swapping the TED engine (R1 hedge "keep TED swappable") would force an edit
+  to the frozen module. Keep `similarity(delta, nodes_a, nodes_b)` as the only public seam; move
+  `similarity_prepared` into `detect` where engine + formula compose. 5-line move now.
+- **N22 (two sources of |T| — pin at T5):** `similarity_prepared` normalizes by `PreparedTree::len()`; report
+  (N8) emits `Fragment.node_count`. They must never diverge. Add a test over parsed `Extracted` asserting
+  `PreparedTree::new(&e.tree).len() == e.fragment.node_count`. Consider renaming `PreparedTree::len()` →
+  `node_count()`.
+- **N23 (unbounded n·m matrix — PRODUCT DECISION):** nothing caps fragment size; S2's `impl` bodies can be
+  thousands of nodes → two 5k-node fragments = ~25M-cell usize matrix (~200 MB), and Rust alloc failure
+  ABORTS (unhandleable). T11 ratio pre-filter does NOT help (two similar-sized giants pass). Decide:
+  (a) node ceiling that skips-with-stderr-diagnostic (deterministic, fits A8), or (b) accept + document.
+  Cheap win regardless: cells fit in `u32` (δ ≤ n+m) → halves memory.
+- **N24 (per-pair scratch — record only, T12 candidate):** `tree_dist` + forest matrices are re-allocated per
+  pair; a caller-owned reusable scratch buffer (`distance_with_scratch`) is the next perf lever after T11.
+  YAGNI for S1; ensure T12 benchmark measures this.
+- **N25 (dead surface — resolve at T5, ties N11):** `distance_trees` has no production consumer (tests only).
+  At T5 delete it or make it `#[cfg(test)]`, else `ted.rs`'s `#![allow(dead_code)]` can't drop by end of S1.
+- **N26 (fail-fast — cheap, do at T5):** `get`/`set` silently return `0`/drop on out-of-range index (honors
+  no-panic rule) but would turn a future indexing bug into a silently-wrong score. Add `debug_assert!` in
+  both: fail-fast in dev/test, unchanged panic-free release.
+- **N27 (N18 re-scoped UP — scoring-correctness, resolve before D5):** hashing is off the table (TED uses
+  `PartialEq` only), so N18's real substance is sharper: `Binary(&'static str)`/`Unary(&'static str)` with
+  `_ => "?"` makes two DIFFERENT unhandled operators compare EQUAL → TED charges relabel 0 → inflated score
+  (silent false positive, grows as `syn` adds operators). Replace with `BinOpKind`/`UnOpKind` enums for
+  compiler exhaustiveness. Bonus: all `Label` payloads are `Copy` today → `Label` could derive `Copy`/`Hash`,
+  making the flatten a trivial memcpy. Feeds D5/R2.
+
+Anders end-to-end test asks for T5: (i) the N22 `len()==node_count` invariant over parsed fixtures;
+(ii) `parse → prepare → distance → similarity` on two real Type-2 renamed fns asserting `score == 1.0`
+(the feature's core claim, not yet proven end-to-end); (iii) a T11 prune-soundness test (filtered vs
+un-filtered candidate sets identical).
