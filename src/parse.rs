@@ -1,19 +1,23 @@
 //! Parse adapter: `syn` → normalized label tree + fragment extraction.
 //! Confines the `syn` / `proc-macro2` dependencies to this module.
 //!
-//! S1 extracts **free functions and methods** (inherent-impl, trait-impl, and
-//! trait default-method bodies). `impl` bodies, closures, and free `{}` blocks
-//! are S2 (T8) and are *not* extracted here — though a closure appearing inside
-//! a function body is still lowered as part of that function's tree.
+//! Extraction is **EXTENDED** granularity (A1): free functions, methods
+//! (inherent-impl, trait-impl and trait default-method bodies), `impl` block
+//! bodies, closures, and free `{}` block expressions. Nested fragments overlap
+//! their parents by construction — a closure inside a method is both lowered
+//! into that method's tree *and* emitted as a fragment of its own. Removing the
+//! resulting redundant findings is the containment-dedup policy's job
+//! (`crate::dedup`, T9), not this module's.
 //!
 //! Lowering canonicalizes identifiers/literals and preserves structure; see
 //! [`crate::tree`] for the normalization contract.
 
 use proc_macro2::LineColumn;
 use syn::spanned::Spanned;
+use syn::visit::{self, Visit};
 use syn::{
-    BinOp, Block, Expr, ImplItem, Item, Macro, MacroDelimiter, Pat, PointerMutability, RangeLimits,
-    Signature, Stmt, TraitItem, UnOp,
+    BinOp, Block, Expr, ExprBlock, ExprClosure, ImplItem, ImplItemFn, ItemFn, ItemImpl, Macro,
+    MacroDelimiter, Pat, PointerMutability, RangeLimits, Signature, Stmt, TraitItemFn, UnOp,
 };
 
 use crate::error::{Error, Result};
@@ -21,77 +25,181 @@ use crate::model::{Analyzed, Fragment, FragmentKind};
 use crate::tree::{BlockKind, Delimiter, Label, Mutability, NormTree, RangeKind};
 
 /// Parse `source` (the contents of the `/`-normalized `path`) and extract every
-/// S1 fragment (free functions + methods), each paired with its normalized tree.
+/// fragment (A1's EXTENDED set), each paired with its normalized tree.
 ///
-/// Results are ordered deterministically by `Fragment::canonical_key`. A parse
-/// failure is mapped to [`Error::Parse`] with the `syn` error's line/column
-/// folded into the message (the variant carries only a `String`), so location
-/// survives (N2).
+/// Results are ordered deterministically by `Fragment::canonical_key`. Nested
+/// fragments are emitted alongside their enclosing ones and therefore overlap
+/// them (see the module note). A parse failure is mapped to [`Error::Parse`]
+/// with the `syn` error's line/column folded into the message (the variant
+/// carries only a `String`), so location survives (N2).
 pub(crate) fn extract(path: &str, source: &str) -> Result<Vec<Analyzed>> {
     let file = syn::parse_file(source).map_err(|err| parse_error(path, &err))?;
-    let mut out = Vec::new();
-    collect_items(path, &file.items, &mut out);
+    let mut collector = Collector {
+        path,
+        out: Vec::new(),
+    };
+    collector.visit_file(&file);
+    let mut out = collector.out;
     out.sort_by(|a, b| a.fragment.canonical_key().cmp(&b.fragment.canonical_key()));
     Ok(out)
 }
 
-/// Recursively collect fragments from a list of items (descending into inline
-/// modules so `mod m { fn .. }` is covered).
-fn collect_items(path: &str, items: &[Item], out: &mut Vec<Analyzed>) {
-    for item in items {
-        match item {
-            Item::Fn(f) => out.push(build(path, FragmentKind::Function, &f.sig, &f.block)),
-            Item::Impl(imp) => {
-                for member in &imp.items {
-                    if let ImplItem::Fn(m) = member {
-                        out.push(build(path, FragmentKind::Method, &m.sig, &m.block));
-                    }
-                }
-            }
-            Item::Trait(tr) => {
-                for member in &tr.items {
-                    if let TraitItem::Fn(m) = member {
-                        // Only trait methods with a default body are fragments.
-                        if let Some(block) = &m.default {
-                            out.push(build(path, FragmentKind::Method, &m.sig, block));
-                        }
-                    }
-                }
-            }
-            Item::Mod(m) => {
-                if let Some((_, inner)) = &m.content {
-                    collect_items(path, inner, out);
-                }
-            }
-            _ => {}
+/// Walks a parsed file and emits one [`Analyzed`] per extractable construct.
+///
+/// `syn`'s visitor supplies the traversal, so every construct is caught
+/// wherever it appears (a closure in a trait default body, a free block inside
+/// another closure, …) without this module re-enumerating the expression
+/// grammar that [`lower_expr`] already covers.
+struct Collector<'a> {
+    /// The `/`-normalized path every emitted fragment carries.
+    path: &'a str,
+    /// Fragments found so far, in traversal order.
+    out: Vec<Analyzed>,
+}
+
+impl Collector<'_> {
+    /// Record one fragment from its normalized tree and 1-based line span.
+    fn push(&mut self, kind: FragmentKind, tree: NormTree, (start_line, end_line): (usize, usize)) {
+        let fragment = Fragment {
+            path: self.path.to_string(),
+            start_line,
+            end_line,
+            node_count: tree.node_count(),
+            // N9: `line_count` is the physical span height `end - start + 1`
+            // (the value `--min-lines` gates on in T5). Logical LOC was
+            // considered for closer dry4go parity but the physical span is
+            // unambiguous and stable.
+            line_count: end_line - start_line + 1,
+            kind,
+        };
+        self.out.push(Analyzed { fragment, tree });
+    }
+
+    /// Descend into an expression that is some construct's **body**.
+    ///
+    /// A braced body (`|x| { .. }`, `else { .. }`, `pat => { .. }`) belongs to
+    /// its construct's shape, so it is walked for the fragments *inside* it
+    /// without being emitted as a free block of its own.
+    fn visit_body(&mut self, expr: &Expr) {
+        match expr {
+            Expr::Block(e) => self.visit_block(&e.block),
+            other => self.visit_expr(other),
         }
     }
 }
 
-/// Assemble one [`Analyzed`] from a function/method signature and body.
-fn build(path: &str, kind: FragmentKind, sig: &Signature, block: &Block) -> Analyzed {
-    let tree = lower_fn(sig, block);
-    let (start_line, end_line) = fn_span(sig, block);
-    let fragment = Fragment {
-        path: path.to_string(),
-        start_line,
-        end_line,
-        node_count: tree.node_count(),
-        // N9: `line_count` is the physical span height `end - start + 1` (the
-        // value `--min-lines` gates on in T5). Logical LOC was considered for
-        // closer dry4go parity but the physical span is unambiguous and stable.
-        line_count: end_line - start_line + 1,
-        kind,
-    };
-    Analyzed { fragment, tree }
+impl<'ast> Visit<'ast> for Collector<'_> {
+    fn visit_item_fn(&mut self, node: &'ast ItemFn) {
+        self.push(
+            FragmentKind::Function,
+            lower_fn(&node.sig, &node.block),
+            fn_span(&node.sig, &node.block),
+        );
+        visit::visit_item_fn(self, node);
+    }
+
+    fn visit_item_impl(&mut self, node: &'ast ItemImpl) {
+        // The `impl` block as a whole: a repeated set of methods is itself a
+        // clone signal, independent of each method matching individually.
+        self.push(
+            FragmentKind::ImplBlock,
+            lower_impl(node),
+            line_span(
+                node.impl_token.span().start(),
+                node.brace_token.span.close().end(),
+            ),
+        );
+        visit::visit_item_impl(self, node);
+    }
+
+    fn visit_impl_item_fn(&mut self, node: &'ast ImplItemFn) {
+        self.push(
+            FragmentKind::Method,
+            lower_fn(&node.sig, &node.block),
+            fn_span(&node.sig, &node.block),
+        );
+        visit::visit_impl_item_fn(self, node);
+    }
+
+    fn visit_trait_item_fn(&mut self, node: &'ast TraitItemFn) {
+        // Only trait methods with a default body are fragments.
+        if let Some(block) = &node.default {
+            self.push(
+                FragmentKind::Method,
+                lower_fn(&node.sig, block),
+                fn_span(&node.sig, block),
+            );
+        }
+        visit::visit_trait_item_fn(self, node);
+    }
+
+    fn visit_expr_closure(&mut self, node: &'ast ExprClosure) {
+        self.push(
+            FragmentKind::Closure,
+            lower_closure(node),
+            line_span(node.span().start(), node.span().end()),
+        );
+        for input in &node.inputs {
+            self.visit_pat(input);
+        }
+        self.visit_body(&node.body);
+    }
+
+    fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
+        self.visit_expr(&node.cond);
+        self.visit_block(&node.then_branch);
+        if let Some((_, else_branch)) = &node.else_branch {
+            self.visit_body(else_branch);
+        }
+    }
+
+    fn visit_arm(&mut self, node: &'ast syn::Arm) {
+        self.visit_pat(&node.pat);
+        if let Some((_, guard)) = &node.guard {
+            self.visit_expr(guard);
+        }
+        self.visit_body(&node.body);
+    }
+
+    fn visit_expr_block(&mut self, node: &'ast ExprBlock) {
+        // A *free* block: braces written as an expression or a bare statement,
+        // rather than as some construct's body. A body's braces are
+        // construct-owned — they are that construct's own shape, already part
+        // of the fragment it emits, not a fragment in their own right — so the
+        // three expression-typed bodies (`else` branch, match-arm body,
+        // closure body) descend through [`Collector::visit_body`] instead.
+        // `if`/`loop`/`while`/`for`/function bodies are `syn::Block`s, not
+        // block *expressions*, so they never reach here; the flavored blocks
+        // (`unsafe`/`async`/`try`/`const`) have their own expression nodes.
+        self.push(
+            FragmentKind::Block,
+            lower_block(&node.block),
+            line_span(node.block.span().start(), node.block.span().end()),
+        );
+        visit::visit_expr_block(self, node);
+    }
+
+    fn visit_stmt(&mut self, node: &'ast Stmt) {
+        // An item nested inside a body is opaque to lowering (see
+        // [`Label::Item`]), so nothing inside it belongs to any fragment;
+        // extraction stops at it for the same reason.
+        if matches!(node, Stmt::Item(_)) {
+            return;
+        }
+        visit::visit_stmt(self, node);
+    }
 }
 
 /// The 1-based `(start_line, end_line)` of a function/method — from the `fn`
 /// keyword through the body's closing brace.
 fn fn_span(sig: &Signature, block: &Block) -> (usize, usize) {
-    let start = line_of(sig.fn_token.span().start());
-    let end = line_of(block.span().end());
-    // Guard against any degenerate span so `line_count` never underflows.
+    line_span(sig.fn_token.span().start(), block.span().end())
+}
+
+/// A 1-based line span from two locations, guarded so `line_count` can never
+/// underflow on a degenerate span.
+fn line_span(start: LineColumn, end: LineColumn) -> (usize, usize) {
+    let (start, end) = (line_of(start), line_of(end));
     if end < start {
         (start, start)
     } else {
@@ -141,6 +249,36 @@ fn lower_fn(sig: &Signature, block: &Block) -> NormTree {
     NormTree::new(Label::Function, children)
 }
 
+/// Lower an `impl` block body: one child per method, in source order.
+///
+/// Associated consts and types carry only names and types, both of which the
+/// normalization contract erases, so they contribute no shape and are skipped.
+fn lower_impl(imp: &ItemImpl) -> NormTree {
+    NormTree::new(
+        Label::Impl,
+        imp.items
+            .iter()
+            .filter_map(|member| match member {
+                ImplItem::Fn(f) => Some(lower_fn(&f.sig, &f.block)),
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+/// Lower a closure: its input patterns, then its body.
+fn lower_closure(e: &ExprClosure) -> NormTree {
+    let mut children: Vec<NormTree> = e.inputs.iter().map(lower_pat).collect();
+    children.push(lower_expr(&e.body));
+    NormTree::new(
+        Label::Closure {
+            inputs: e.inputs.len(),
+            capture: e.capture.is_some(),
+        },
+        children,
+    )
+}
+
 /// Lower a `{ .. }` block of the given flavor: one child per statement, in order.
 fn lower_block_of(kind: BlockKind, block: &Block) -> NormTree {
     NormTree::new(
@@ -171,10 +309,10 @@ fn lower_stmt(stmt: &Stmt) -> NormTree {
         Stmt::Macro(m) => NormTree::leaf(macro_label(&m.mac)),
         // A nested item (e.g. an inner `fn`) is not part of the enclosing
         // body's shape, so its interior is not lowered. It is also not
-        // extracted as a fragment of its own — `collect_items` does not
-        // descend into function bodies — and that is a non-goal, not deferred
-        // work. (T8 extends granularity to impl bodies, closures and free
-        // blocks; it does not cover in-body nested items.)
+        // extracted as a fragment of its own — `Collector::visit_stmt` stops
+        // at it — and that is a non-goal, not deferred work. (T8's EXTENDED
+        // granularity covers impl bodies, closures and free blocks; it does
+        // not cover in-body nested items.)
         Stmt::Item(_) => NormTree::leaf(Label::Item),
     }
 }
@@ -208,17 +346,7 @@ fn lower_expr(expr: &Expr) -> NormTree {
             NormTree::new(Label::Call, children)
         }
         Expr::Cast(e) => NormTree::new(Label::Cast, vec![lower_expr(&e.expr)]),
-        Expr::Closure(e) => {
-            let mut children: Vec<NormTree> = e.inputs.iter().map(lower_pat).collect();
-            children.push(lower_expr(&e.body));
-            NormTree::new(
-                Label::Closure {
-                    inputs: e.inputs.len(),
-                    capture: e.capture.is_some(),
-                },
-                children,
-            )
-        }
+        Expr::Closure(e) => lower_closure(e),
         Expr::Const(e) => lower_block_of(BlockKind::Const, &e.block),
         Expr::Continue(_) => NormTree::leaf(Label::Continue),
         Expr::Field(e) => NormTree::new(Label::FieldAccess, vec![lower_expr(&e.base)]),
@@ -483,12 +611,17 @@ mod tests {
     }
 
     /// The normalized tree of `fn f() { <body> }` — the unit of the inequality
-    /// tests below.
+    /// tests below. Bodies containing a closure or a free block now also yield
+    /// nested fragments (T8), so the enclosing function is selected by kind.
     fn body_tree(body: &str) -> NormTree {
         let source = format!("fn f() {{ {body} }}");
-        let mut extracted = extract("test.rs", &source).expect("body should parse");
-        assert_eq!(extracted.len(), 1, "expected exactly one fragment");
-        extracted.remove(0).tree
+        let extracted = extract("test.rs", &source).expect("body should parse");
+        let mut functions: Vec<Analyzed> = extracted
+            .into_iter()
+            .filter(|e| e.fragment.kind == FragmentKind::Function)
+            .collect();
+        assert_eq!(functions.len(), 1, "expected exactly one function fragment");
+        functions.remove(0).tree
     }
 
     /// Assert every listed body lowers to a tree distinct from all the others.
@@ -506,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    fn extracts_free_functions_and_methods() {
+    fn extracts_free_functions_methods_and_the_impl_block() {
         let source = "\
 fn a() { let x = 1; }
 fn b(y: u32) -> u32 { y + 1 }
@@ -518,11 +651,14 @@ impl S {
 ";
         let extracted = extract_ok(source);
         let kinds: Vec<FragmentKind> = extracted.iter().map(|e| e.fragment.kind).collect();
+        // The `impl` block precedes its own methods: it starts on an earlier
+        // line, and the canonical key sorts on the span (T8).
         assert_eq!(
             kinds,
             vec![
                 FragmentKind::Function,
                 FragmentKind::Function,
+                FragmentKind::ImplBlock,
                 FragmentKind::Method,
                 FragmentKind::Method,
             ]
@@ -539,7 +675,15 @@ impl S {
         }
         // `fn a` starts on line 1; the last method ends deeper in the file.
         assert_eq!(extracted[0].fragment.start_line, 1);
-        assert!(extracted[3].fragment.end_line >= 6);
+        assert!(extracted[4].fragment.end_line >= 6);
+        // The `impl` block spans its whole body, methods included.
+        assert_eq!(
+            (
+                extracted[2].fragment.start_line,
+                extracted[2].fragment.end_line
+            ),
+            (4, 7)
+        );
     }
 
     #[test]
@@ -622,18 +766,165 @@ mod inner {
 }
 ";
         let extracted = extract_ok(source);
-        // trait default body, trait-impl method, and both inline-mod functions —
-        // the `required` *declaration* (no body) is not a fragment.
+        // trait default body, the trait `impl` block and its method, and both
+        // inline-mod functions — the `required` *declaration* (no body) is not
+        // a fragment.
         let kinds: Vec<FragmentKind> = extracted.iter().map(|e| e.fragment.kind).collect();
         assert_eq!(
             kinds,
             vec![
                 FragmentKind::Method,
+                FragmentKind::ImplBlock,
                 FragmentKind::Method,
                 FragmentKind::Function,
                 FragmentKind::Function,
             ]
         );
+    }
+
+    // --- T8: nested (EXTENDED) extraction ------------------------------------
+
+    #[test]
+    fn extracts_closures_and_free_blocks_nested_inside_their_parents() {
+        let source = "\
+fn outer() {
+    let doubler = |x| {
+        x * 2
+    };
+    let scoped = {
+        let inner = |y| y;
+        inner(1)
+    };
+}
+";
+        let extracted = extract_ok(source);
+        let kinds: Vec<FragmentKind> = extracted.iter().map(|e| e.fragment.kind).collect();
+        // Outer function, the first closure, the free block, then the closure
+        // written inside that block — ordered by `(start_line, end_line)`.
+        assert_eq!(
+            kinds,
+            vec![
+                FragmentKind::Function,
+                FragmentKind::Closure,
+                FragmentKind::Block,
+                FragmentKind::Closure,
+            ]
+        );
+
+        // Nested fragments overlap their parents by construction at T8 —
+        // containment-dedup (T9) is what removes the redundancy later.
+        let spans: Vec<(usize, usize)> = extracted
+            .iter()
+            .map(|e| (e.fragment.start_line, e.fragment.end_line))
+            .collect();
+        assert_eq!(spans, vec![(1, 9), (2, 4), (5, 8), (6, 6)]);
+    }
+
+    #[test]
+    fn a_control_flow_body_is_not_a_free_block() {
+        // `if` / `loop` / `for` / `while` / `match`-arm bodies are part of the
+        // enclosing construct's shape, so only the function is a fragment.
+        let source = "\
+fn f(v: bool) {
+    if v { g(); } else { h(); }
+    loop { g(); }
+    for x in v { g(); }
+    while v { g(); }
+    match v { true => { g(); } false => {} }
+}
+";
+        let kinds: Vec<FragmentKind> = extract_ok(source).iter().map(|e| e.fragment.kind).collect();
+        assert_eq!(kinds, vec![FragmentKind::Function]);
+    }
+
+    #[test]
+    fn nested_fragment_node_counts_match_their_own_trees_and_fit_their_parents() {
+        let source = "\
+fn outer() {
+    let f = |x| x + 1;
+    { let y = 2; }
+}
+struct S;
+impl S {
+    fn m(&self) { let g = |z| z; }
+}
+";
+        let extracted = extract_ok(source);
+        for e in &extracted {
+            assert_eq!(
+                e.fragment.node_count,
+                e.tree.node_count(),
+                "node count must come from the fragment's own tree"
+            );
+        }
+
+        let by_kind = |kind: FragmentKind| -> Vec<usize> {
+            extracted
+                .iter()
+                .filter(|e| e.fragment.kind == kind)
+                .map(|e| e.fragment.node_count)
+                .collect()
+        };
+        // `Closure{1,false}(PatBinding, Binary(Path, Literal))` = 5 nodes;
+        // `Block(Let(PatBinding, Literal))` = 4; the method's closure
+        // `Closure(PatBinding, Path)` = 3.
+        assert_eq!(by_kind(FragmentKind::Closure), vec![5, 3]);
+        assert_eq!(by_kind(FragmentKind::Block), vec![4]);
+        // Every nested fragment is strictly smaller than the parent it actually
+        // sits in: the first closure and the free block are inside `outer`, the
+        // second closure is inside `S::m`.
+        let function = by_kind(FragmentKind::Function);
+        let method = by_kind(FragmentKind::Method);
+        assert_eq!((function.len(), method.len()), (1, 1));
+        assert!(by_kind(FragmentKind::Closure)[0] < function[0]);
+        assert!(by_kind(FragmentKind::Block)[0] < function[0]);
+        assert!(by_kind(FragmentKind::Closure)[1] < method[0]);
+        // The `impl` block wraps its single method's tree: `Impl(Function(..))`.
+        let impl_block = by_kind(FragmentKind::ImplBlock);
+        assert_eq!(impl_block, vec![by_kind(FragmentKind::Method)[0] + 1]);
+    }
+
+    #[test]
+    fn an_impl_block_lowers_to_its_methods_in_source_order() {
+        let source = "\
+struct S;
+impl S {
+    const N: u32 = 1;
+    fn a(&self) { let x = 1; }
+    fn b(&self) {}
+}
+";
+        let extracted = extract_ok(source);
+        let block = extracted
+            .iter()
+            .find(|e| e.fragment.kind == FragmentKind::ImplBlock)
+            .expect("the impl block is a fragment");
+        let methods: Vec<&NormTree> = extracted
+            .iter()
+            .filter(|e| e.fragment.kind == FragmentKind::Method)
+            .map(|e| &e.tree)
+            .collect();
+
+        // Associated consts carry only erased names/types and contribute no
+        // shape, so the block's children are exactly its two method trees.
+        assert_eq!(block.tree.label, Label::Impl);
+        assert_eq!(block.tree.children.len(), 2);
+        assert_eq!(&block.tree.children[0], methods[0]);
+        assert_eq!(&block.tree.children[1], methods[1]);
+    }
+
+    #[test]
+    fn an_item_nested_in_a_body_is_not_descended_into() {
+        // The lowering treats an in-body item as an opaque leaf, so nothing
+        // inside it belongs to any fragment — extraction stops there too.
+        let source = "\
+fn outer() {
+    fn inner() { let f = |x| x; }
+    let g = |y| y;
+}
+";
+        let kinds: Vec<FragmentKind> = extract_ok(source).iter().map(|e| e.fragment.kind).collect();
+        assert_eq!(kinds, vec![FragmentKind::Function, FragmentKind::Closure]);
     }
 
     // --- Normalization inequality guards (R3) -------------------------------

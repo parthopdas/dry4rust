@@ -36,7 +36,9 @@ lib; dependencies flow **adapters → core**, never the reverse.
   the crate's only public façade `run(&RunOptions) -> Result<RunOutput>` (plus `RunOptions`/`RunOutput`/
   `Format` and the `error` types; everything else is `pub(crate)`). It owns the per-file
   skip-with-diagnostic policy. Below it, **core** is IO-free; `discovery` is the only other module that
-  touches the filesystem (traversal).
+  touches the filesystem (traversal). It also owns the **oversized-fragment ceiling** (`max_nodes`):
+  a fragment above it is dropped before `detect` with its own deterministic stderr diagnostic, so a
+  pair of giants can never dominate a run.
 - **Bin crate:** `cli` (clap parsing; **`clap` confined here**) + `main` (`anyhow` wiring, exit codes).
 
 Rule: core modules import no third-party crate and perform no IO; adapters depend on core; the bin
@@ -78,7 +80,8 @@ depends on lib. This keeps the scoring math testable in isolation and the TED en
   error.
 - **Config:** all behavior via CLI flags; no secrets, no network, no persistence.
 - **Performance:** O(n²) pairs × super-quadratic TED is the main scaling risk; mitigated by the node
-  floor, the admissible size-ratio pre-filter, and confining TED so it stays swappable.
+  floor, the admissible size-ratio pre-filter, the oversized-fragment ceiling, and confining TED so it
+  stays swappable.
 - **Observability:** stdout is the report; diagnostics (e.g. skipped unparsable files) go to stderr and
   never perturb stdout bytes.
 

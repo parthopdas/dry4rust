@@ -14,6 +14,19 @@ use clap::{Parser, ValueEnum};
 
 use dry4rust::{Format, RunOptions};
 
+/// The oversized-fragment ceiling handed to `run` (N23/N30).
+///
+/// TED is super-quadratic in the node counts, so a pair of very large
+/// fragments — which the size-ratio pre-filter cannot prune, being
+/// similar-sized — can dominate a whole run. `2000` nodes is far above any
+/// hand-written function or `impl` block we expect to compare (the S1 dogfood's
+/// largest fragment is an order of magnitude smaller) while keeping the worst
+/// admitted pair's DP matrix at ~4M `u32` cells. It is deliberately **not** a
+/// CLI flag: the dry4go skin has no such option, and a policy nobody has needed
+/// to tune does not warrant one (YAGNI). Kept here so all defaults stay in the
+/// clap layer (N29).
+const MAX_NODES: usize = 2000;
+
 /// Parse the process arguments into library run options.
 ///
 /// Exits the process with clap's usage error (code 2) on a bad flag or an
@@ -91,6 +104,7 @@ impl From<Cli> for RunOptions {
             threshold: cli.threshold,
             min_lines: cli.min_lines,
             min_nodes: cli.min_nodes,
+            max_nodes: MAX_NODES,
             format,
         }
     }
@@ -126,6 +140,7 @@ mod tests {
         assert_eq!(options.threshold, 0.75);
         assert_eq!(options.min_lines, 4);
         assert_eq!(options.min_nodes, 20);
+        assert_eq!(options.max_nodes, MAX_NODES);
         assert_eq!(options.format, Format::Text);
     }
 

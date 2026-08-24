@@ -62,6 +62,9 @@ fn options(root: &Path, format: Format) -> RunOptions {
         threshold: 0.75,
         min_lines: 4,
         min_nodes: 20,
+        // The binary's ceiling (`cli::MAX_NODES`); every fixture here is far
+        // below it, so it is inert except in the ceiling test below.
+        max_nodes: 2000,
         format,
     }
 }
@@ -225,6 +228,45 @@ fn gitignored_and_target_copies_are_skipped_through_the_facade() {
 
     // Strictly stronger than a shape check: the report bytes are exactly the
     // clean baseline's (N51).
+    assert_eq!(output.report, clean.report);
+    assert!(output.diagnostics.is_empty());
+}
+
+/// N23/N30: a fragment above `max_nodes` is dropped before detection, with its
+/// own deterministic one-line diagnostic, and the run still succeeds. TED is
+/// super-quadratic and the size-ratio pre-filter cannot prune two similar-sized
+/// giants, so the ceiling is the only thing bounding a pathological pair.
+#[test]
+fn an_oversized_fragment_is_skipped_with_a_diagnostic_and_the_run_continues() {
+    let dir = duplicate_pair_tree();
+    let at = prefix(dir.path());
+
+    // Both fragments are 23 nodes; a ceiling of 10 drops both.
+    let mut opts = options(dir.path(), Format::Text);
+    opts.max_nodes = 10;
+    let output = run(&opts).expect("run should succeed");
+
+    assert_eq!(output.report, "No duplicate candidates found.\n");
+    assert_eq!(
+        output.diagnostics,
+        vec![
+            format!("warning: skipping {at}a.rs:1-9: 23 nodes exceeds the 10-node ceiling"),
+            format!("warning: skipping {at}b.rs:1-9: 23 nodes exceeds the 10-node ceiling"),
+        ]
+    );
+}
+
+/// The ceiling is inclusive: a fragment exactly at it is still compared, so the
+/// clean report is unchanged and nothing is reported to stderr.
+#[test]
+fn a_fragment_exactly_at_the_ceiling_is_kept() {
+    let dir = duplicate_pair_tree();
+    let clean = run_on(dir.path(), Format::Text);
+
+    let mut opts = options(dir.path(), Format::Text);
+    opts.max_nodes = 23;
+    let output = run(&opts).expect("run should succeed");
+
     assert_eq!(output.report, clean.report);
     assert!(output.diagnostics.is_empty());
 }

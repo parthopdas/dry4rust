@@ -94,6 +94,10 @@ pub(crate) enum Label {
     // --- Fragment / signature shape ---
     /// A function or method body together with its signature shape.
     Function,
+    /// An `impl` block body; children are its methods' [`Label::Function`]
+    /// nodes in source order (associated consts and types carry only erased
+    /// names/types and so contribute no shape).
+    Impl,
     /// The parameter list; its children are one [`Label::Param`] per input.
     Params,
     /// A single parameter (identifier and type normalized away — arity only).

@@ -9,8 +9,7 @@ use crate::tree::NormTree;
 
 /// What kind of code element a [`Fragment`] was extracted from.
 ///
-/// EXTENDED granularity grows this in S2 (closures, `impl` bodies, free
-/// blocks); S1 only distinguishes free functions from methods.
+/// The EXTENDED set (A1) as extracted by `parse` (T8).
 ///
 /// N10 — extraction provenance: asserted by parse tests, deliberately not
 /// emitted (dry4go parity has no kind field); D7's de-scope lever filters on
@@ -22,6 +21,12 @@ pub(crate) enum FragmentKind {
     Function,
     /// A method (inherent, trait-impl, or trait-default body).
     Method,
+    /// An `impl` block body (`impl S { .. }`).
+    ImplBlock,
+    /// A closure expression (`|x| ..` / `move |x| ..`).
+    Closure,
+    /// A free `{ .. }` block written as an expression or a bare statement.
+    Block,
 }
 
 /// An extracted code fragment: a span of source lowered to a normalized tree.

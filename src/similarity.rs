@@ -9,6 +9,17 @@
 //! everything, insert everything); it is symmetric in the two node counts.
 //! The value is returned raw — rounding for display is the report adapter's
 //! job (T6).
+//!
+//! # Contract: weak monotone non-increase in δ (N56)
+//!
+//! Monotonicity is not merely a property of the current formula — it is a
+//! **contract with a named dependent**: `detect`'s size-ratio pre-filter prunes
+//! a pair by evaluating this function at the smallest feasible δ and comparing
+//! the result against the threshold. That is sound only while
+//! `δ₁ <= δ₂ ⟹ similarity(δ₁, ..) >= similarity(δ₂, ..)` holds *in f64*, not
+//! just in exact arithmetic. Changing this function so that it can rise with δ
+//! anywhere is therefore a **pruning-soundness change — genuine matches would
+//! be dropped before TED ever runs — not just an R3 score change.**
 
 /// Normalized similarity in `[0,1]` for an edit distance and two node counts.
 ///

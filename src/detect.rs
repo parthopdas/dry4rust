@@ -32,8 +32,8 @@ pub(crate) struct DetectOptions {
 /// result is a pure function of the input set — input order does not affect it.
 ///
 /// Fragments are walked in **node-count order** so the size-ratio pre-filter
-/// ([`size_ratio_admits`]) can `break` the inner loop instead of testing every
-/// pair (N53): with counts ascending, once a partner is too large for the
+/// ([`best_possible_score`]) can `break` the inner loop instead of testing
+/// every pair (N53): with counts ascending, once a partner is too large for the
 /// current fragment, every later partner is larger still. Iteration order does
 /// not reach the output — the final canonical `(left, right)` sort does.
 pub(crate) fn detect(analyzed: &[Analyzed], opts: &DetectOptions) -> Vec<Candidate> {
@@ -45,6 +45,13 @@ pub(crate) fn detect(analyzed: &[Analyzed], opts: &DetectOptions) -> Vec<Candida
         (a.fragment.node_count, a.fragment.canonical_key())
             .cmp(&(b.fragment.node_count, b.fragment.canonical_key()))
     });
+    // N58: the `break` below is sound only because `node_count` is the primary
+    // sort key. Free in release, loud in dev/test if a future re-sort drops it.
+    debug_assert!(
+        kept.windows(2)
+            .all(|pair| pair[0].fragment.node_count <= pair[1].fragment.node_count),
+        "detect: the pre-filter break requires `kept` in non-decreasing node-count order"
+    );
 
     // Prepare once per fragment, not once per pair (N17).
     let prepared: Vec<PreparedTree> = kept
@@ -55,26 +62,28 @@ pub(crate) fn detect(analyzed: &[Analyzed], opts: &DetectOptions) -> Vec<Candida
     let mut candidates = Vec::new();
     for (index, (item_a, tree_a)) in kept.iter().zip(&prepared).enumerate() {
         for (item_b, tree_b) in kept.iter().zip(&prepared).skip(index + 1) {
-            if !size_ratio_admits(
-                item_a.fragment.node_count,
-                item_b.fragment.node_count,
-                opts.threshold,
-            ) {
+            // Admission mirrors the gate below: `>= opts.threshold`. A rejected
+            // partner ends the row — with counts ascending, every later partner
+            // is larger still and so rejected too (N53).
+            if best_possible_score(item_a.fragment.node_count, item_b.fragment.node_count)
+                >= opts.threshold
+            {
+                let delta = ted::distance(tree_a, tree_b);
+                let score = similarity(
+                    delta,
+                    item_a.fragment.node_count,
+                    item_b.fragment.node_count,
+                );
+                if score >= opts.threshold {
+                    let (left, right) = canonical_sides(&item_a.fragment, &item_b.fragment);
+                    candidates.push(Candidate {
+                        left: left.clone(),
+                        right: right.clone(),
+                        score,
+                    });
+                }
+            } else {
                 break;
-            }
-            let delta = ted::distance(tree_a, tree_b);
-            let score = similarity(
-                delta,
-                item_a.fragment.node_count,
-                item_b.fragment.node_count,
-            );
-            if score >= opts.threshold {
-                let (left, right) = canonical_sides(&item_a.fragment, &item_b.fragment);
-                candidates.push(Candidate {
-                    left: left.clone(),
-                    right: right.clone(),
-                    score,
-                });
             }
         }
     }
@@ -87,14 +96,15 @@ pub(crate) fn detect(analyzed: &[Analyzed], opts: &DetectOptions) -> Vec<Candida
     candidates
 }
 
-/// Whether a pair's node counts still allow it to reach `threshold` — the
-/// admissible size-ratio pre-filter (T11).
+/// The highest score a pair with these node counts could possibly reach — the
+/// bound behind the admissible size-ratio pre-filter (T11/N57).
 ///
 /// With unit costs, aligning two trees costs at least their size difference
 /// (`δ ≥ max − min`), and `similarity` falls monotonically in δ. The pair's
-/// best possible score is therefore the score it would get at that minimal
-/// δ, and a pair whose best possible score is below the threshold cannot pass
-/// the gate — its TED can be skipped.
+/// best possible score is therefore the score it would get at that minimal δ;
+/// the call site admits a pair when `best_possible_score(a, b) >= threshold`,
+/// mirroring the gate's `score >= threshold` exactly (and `break`s on the
+/// rejected case, which the node-count sort makes final for the row).
 ///
 /// **The bound is evaluated by calling the frozen `similarity` itself** at
 /// `δ = max − min`, rather than by comparing the algebraically-equal ratio
@@ -107,15 +117,17 @@ pub(crate) fn detect(analyzed: &[Analyzed], opts: &DetectOptions) -> Vec<Candida
 /// match. Calling `similarity` removes the discrepancy at the root instead of
 /// papering over it with an epsilon:
 ///
-/// - The comparison here (`bound >= threshold`) and the gate in [`detect`]
-///   (`score >= threshold`) evaluate the *same* function on the same code
-///   path, so the boundary is bit-identical rather than merely close.
+/// - The comparison at the call site and the gate in [`detect`] evaluate the
+///   *same* function on the same code path, so the boundary is bit-identical
+///   rather than merely close.
 /// - `similarity` is weakly monotone non-increasing in δ in f64, not just in
 ///   exact arithmetic: `2δ` and `min + max + δ` are exactly representable for
 ///   every reachable node count, so the division is the correctly-rounded
 ///   image of an exactly-increasing quantity, and correct rounding, `1.0 - r`
 ///   and `clamp` are all monotone. Hence `score = similarity(δ, ..) <=
-///   similarity(max − min, ..) = bound` for every δ ≥ max − min.
+///   similarity(max − min, ..) = bound` for every δ ≥ max − min. Both premises
+///   are stated as contracts at their source: `δ ≥ max − min` on
+///   [`ted::distance`], monotonicity on [`crate::similarity`] (N56).
 /// - Therefore `score >= threshold` implies `bound >= threshold`: a pair the
 ///   gate would accept is always admitted, for **all** node counts and
 ///   thresholds, with no slack term to justify. The converse is allowed — a
@@ -124,16 +136,16 @@ pub(crate) fn detect(analyzed: &[Analyzed], opts: &DetectOptions) -> Vec<Candida
 /// The `max == 0` case needs no special guard any more: `similarity(0, 0, 0)`
 /// takes the frozen function's own `denominator == 0` branch and returns
 /// `1.0`, admitting two empty trees at every threshold in `0.0..=1.0` (N52).
-/// That case is *not* production-reachable: [`crate::parse::build`] always
-/// sets `Fragment::node_count` from `NormTree::node_count`, which is
+/// That case is *not* production-reachable: `parse` always sets
+/// `Fragment::node_count` from `NormTree::node_count`, which is
 /// `1 + descendants` and so never zero, and `--min-nodes 0` only relaxes a
 /// filter — it cannot conjure a zero-node fragment. Zero reaches this
 /// function only by calling it (or `similarity`) directly, so the absence of
-/// a guard is a statement about the predicate's contract, not about the CLI.
-fn size_ratio_admits(nodes_a: usize, nodes_b: usize, threshold: f64) -> bool {
+/// a guard is a statement about the bound's contract, not about the CLI.
+fn best_possible_score(nodes_a: usize, nodes_b: usize) -> f64 {
     let min = nodes_a.min(nodes_b);
     let max = nodes_a.max(nodes_b);
-    similarity(max - min, min, max) >= threshold
+    similarity(max - min, min, max)
 }
 
 /// Whether a fragment clears both size floors.
@@ -323,7 +335,9 @@ mod tests {
             trait T { fn gamma(&self) -> bool { true } }
         "#;
         let parsed = parse::extract("fixture.rs", source).expect("fixture should parse");
-        assert_eq!(parsed.len(), 3);
+        // Two free-standing bodies (`alpha`, `gamma`), plus the `impl` block
+        // and its method `beta` (T8 extraction).
+        assert_eq!(parsed.len(), 4);
         for item in &parsed {
             assert_eq!(
                 PreparedTree::new(&item.tree).len(),
@@ -394,6 +408,12 @@ mod tests {
 
     // ---- T11: the admissible size-ratio pre-filter ----
 
+    /// The pre-filter as the call site in [`detect`] applies it: keep the pair
+    /// when its best possible score still reaches the threshold (N57).
+    fn admits(nodes_a: usize, nodes_b: usize, threshold: f64) -> bool {
+        best_possible_score(nodes_a, nodes_b) >= threshold
+    }
+
     /// A tree of exactly `nodes` nodes: a `Function` root over a plain block
     /// filled with leaves (`nodes >= 2`).
     fn tree_of(nodes: usize) -> NormTree {
@@ -432,7 +452,7 @@ mod tests {
         for nodes_a in 2..12usize {
             for nodes_b in 2..12usize {
                 for threshold in [0.0, 0.25, 0.5, 0.75, 0.9, 1.0] {
-                    if size_ratio_admits(nodes_a, nodes_b, threshold) {
+                    if admits(nodes_a, nodes_b, threshold) {
                         continue;
                     }
                     let (a, b) = (tree_of(nodes_a), tree_of(nodes_b));
@@ -453,23 +473,19 @@ mod tests {
     #[test]
     fn the_predicate_keeps_a_pair_whose_bound_equals_the_threshold() {
         // 3/4 == 0.75 exactly: the gate is `>=`, so this pair must survive.
-        assert!(size_ratio_admits(3, 4, 0.75));
-        assert!(size_ratio_admits(4, 3, 0.75));
-        assert!(size_ratio_admits(10, 10, 1.0));
+        assert!(admits(3, 4, 0.75));
+        assert!(admits(4, 3, 0.75));
+        assert!(admits(10, 10, 1.0));
         // Just below the boundary is prunable.
-        assert!(!size_ratio_admits(2, 4, 0.75));
-        assert!(!size_ratio_admits(9, 10, 1.0));
+        assert!(!admits(2, 4, 0.75));
+        assert!(!admits(9, 10, 1.0));
     }
 
     #[test]
     fn the_predicate_is_symmetric_and_admits_everything_at_threshold_zero() {
         for (a, b) in [(1usize, 9usize), (4, 5), (7, 7), (0, 6)] {
-            assert_eq!(
-                size_ratio_admits(a, b, 0.6),
-                size_ratio_admits(b, a, 0.6),
-                "{a}x{b}"
-            );
-            assert!(size_ratio_admits(a, b, 0.0), "{a}x{b} at threshold 0");
+            assert_eq!(admits(a, b, 0.6), admits(b, a, 0.6), "{a}x{b}");
+            assert!(admits(a, b, 0.0), "{a}x{b} at threshold 0");
         }
     }
 
@@ -486,10 +502,10 @@ mod tests {
     #[test]
     fn the_predicate_contract_admits_zero_node_inputs_defensively() {
         for threshold in [0.0, 0.5, 0.75, 1.0] {
-            assert!(size_ratio_admits(0, 0, threshold));
+            assert!(admits(0, 0, threshold));
         }
         // A zero-node input against a real fragment cannot score above 0.
-        assert!(!size_ratio_admits(0, 5, 0.75));
+        assert!(!admits(0, 5, 0.75));
         assert_eq!(similarity(5, 0, 5), 0.0);
     }
 
@@ -510,10 +526,10 @@ mod tests {
             "the multiplication form must still be the unsafe one"
         );
         assert!(
-            size_ratio_admits(min, max, threshold),
+            admits(min, max, threshold),
             "a pair scoring exactly the threshold must be admitted"
         );
-        assert!(size_ratio_admits(max, min, threshold));
+        assert!(admits(max, min, threshold));
 
         // …and the pair really does reach that score end to end, so pruning it
         // would have dropped a genuine match.

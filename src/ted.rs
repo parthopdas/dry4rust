@@ -84,22 +84,52 @@ fn flatten(tree: &NormTree, labels: &mut Vec<Label>, l: &mut Vec<usize>) -> usiz
 }
 
 /// Unit-cost tree-edit distance δ between two prepared trees.
+///
+/// # Invariant (load-bearing for `detect`'s pre-filter — N56)
+///
+/// Under unit costs, δ is never smaller than the two trees' size difference:
+///
+/// > `δ >= |len(a) as isize - len(b) as isize|`
+///
+/// (every surplus node must be inserted or deleted, at cost 1 each), and never
+/// larger than `len(a) + len(b)`. The lower bound is what makes
+/// [`crate::detect`]'s size-ratio pre-filter *admissible*: it prunes on the
+/// score this engine would produce at the smallest feasible δ. **Any
+/// replacement TED engine (R1 keeps this module swappable) must preserve that
+/// inequality** — breaking it silently turns the pre-filter into a source of
+/// dropped matches, not just a slower or differently-scored run.
+///
+/// The upper bound is why the DP cells below are `u32` (N23/N26): every value
+/// is at most `n + m`, so the matrices need half the memory a `usize` cell
+/// would take. That representation carries a standing requirement —
+/// `n + m <= u32::MAX` — which [`crate::run`] discharges structurally by
+/// admitting no fragment larger than [`crate::MAX_SUPPORTED_NODES`]
+/// (`u32::MAX / 2`). The representation is internal — the returned δ stays
+/// `usize`.
 pub(crate) fn distance(a: &PreparedTree, b: &PreparedTree) -> usize {
     let (n, m) = (a.len(), b.len());
     if n == 0 || m == 0 {
         return n + m;
     }
+    // Every cell is bounded by δ ≤ n + m. The façade admits no fragment above
+    // `crate::MAX_SUPPORTED_NODES` (= u32::MAX / 2), so `n + m` fits a `u32`
+    // for every reachable pair — in release as well as debug. This assertion
+    // only catches an in-crate caller that bypassed that clamp.
+    debug_assert!(
+        n.saturating_add(m) <= u32::MAX as usize,
+        "ted: {n} + {m} nodes overflows the u32 cell representation"
+    );
 
     // `tree_dist[i * m + j]` — distance between the subtrees rooted at node `i`
     // of `a` and node `j` of `b`. Filled keyroot pair by keyroot pair in
     // ascending order, so every value a later pair reads is already final.
-    let mut tree_dist = vec![0usize; n * m];
+    let mut tree_dist = vec![0u32; n * m];
     for &i in &a.keyroots {
         for &j in &b.keyroots {
             forest_distance(a, b, i, j, m, &mut tree_dist);
         }
     }
-    get(&tree_dist, (n - 1) * m + (m - 1))
+    get(&tree_dist, (n - 1) * m + (m - 1)) as usize
 }
 
 /// Prepares both trees and returns their unit-cost tree-edit distance.
@@ -119,7 +149,7 @@ fn forest_distance(
     i: usize,
     j: usize,
     m: usize,
-    tree_dist: &mut [usize],
+    tree_dist: &mut [u32],
 ) {
     let li = get(&a.l, i);
     let lj = get(&b.l, j);
@@ -127,7 +157,7 @@ fn forest_distance(
     // node ranges `li..=i` and `lj..=j`; forest index `x` is node `li + x - 1`.
     let rows = i - li + 2;
     let cols = j - lj + 2;
-    let mut fd = vec![0usize; rows * cols];
+    let mut fd = vec![0u32; rows * cols];
 
     for x in 1..rows {
         let deletions = get(&fd, (x - 1) * cols) + 1;
@@ -166,7 +196,7 @@ fn forest_distance(
 }
 
 /// 0 when the two nodes carry equal labels, 1 otherwise.
-fn relabel_cost(a: &PreparedTree, b: &PreparedTree, node_a: usize, node_b: usize) -> usize {
+fn relabel_cost(a: &PreparedTree, b: &PreparedTree, node_a: usize, node_b: usize) -> u32 {
     match (a.labels.get(node_a), b.labels.get(node_b)) {
         (Some(left), Some(right)) if left == right => 0,
         _ => 1,
@@ -174,13 +204,13 @@ fn relabel_cost(a: &PreparedTree, b: &PreparedTree, node_a: usize, node_b: usize
 }
 
 /// Non-panicking read; every index used above is in range by construction.
-fn get(cells: &[usize], index: usize) -> usize {
+fn get<T: Copy + Default>(cells: &[T], index: usize) -> T {
     debug_assert!(index < cells.len(), "ted: read index {index} out of range");
-    cells.get(index).copied().unwrap_or(0)
+    cells.get(index).copied().unwrap_or_default()
 }
 
 /// Non-panicking write; every index used above is in range by construction.
-fn set(cells: &mut [usize], index: usize, value: usize) {
+fn set<T>(cells: &mut [T], index: usize, value: T) {
     debug_assert!(index < cells.len(), "ted: write index {index} out of range");
     if let Some(cell) = cells.get_mut(index) {
         *cell = value;
