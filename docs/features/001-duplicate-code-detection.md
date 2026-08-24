@@ -1,6 +1,6 @@
 # Feature: Duplicate Code Detection (TED core, dry4go UX skin)
 **Branch:** vibe/001-duplicate-code-detection
-**Status:** WIP — **S1 DONE** (confirmed by Anders at T7b); next: T11 → T8 → scoring pass → T9/T10 → D5 → T12
+**Status:** WIP — **S1 DONE**; T11 landed (S3 partial). Next: T8 → scoring pass → T9/T10 → D5 → T12
 
 ## Requirements
 
@@ -83,7 +83,7 @@ built binary against fixture trees.
 | T8  | S2 | Extend extraction to `impl` block bodies, closures, free `{}` blocks. **Unit:** nested-fragment extraction + node counts. | Pending | - |
 | T9  | S2 | Containment-dedup policy (maximal-parent-wins, both-sides; identical-span dedup; deterministic tie-break). **Unit:** both-sided suppression; one-sided keep; identical-span dedup. | Pending | - |
 | T10 | S2 | **Integration:** fixture with duplicated nested closures/blocks → assert only maximal pairs reported. | Pending | - |
-| T11 | S3 | Admissible size-ratio pre-filter (`sim ≤ min(n₁,n₂)/max(n₁,n₂)`): prune pairs below `--threshold` before TED — provably never drops a real match. **Unit:** prune-soundness (a would-be match is never pruned). | Pending | - |
+| T11 | S3 | Admissible size-ratio pre-filter (`sim ≤ min(n₁,n₂)/max(n₁,n₂)`): prune pairs below `--threshold` before TED — provably never drops a real match. **Unit:** prune-soundness (a would-be match is never pruned). **Landed as `similarity(max−min,min,max) >= threshold` — see N52 restated.** | Done | bb38a40 |
 | T12 | S3 | Perf guardrail benchmark on a medium fixture; document complexity envelope. **Integration/bench.** | Pending | - |
 
 ## Risks (Rx)
@@ -426,10 +426,9 @@ end-to-end. Remaining notes are doc-precision/test-tightening and cannot alter S
   non-empty (exit 1 with no message would pass today). N43 would be non-vacuous *locally* if the LF side
   asserted it contains `DUPLICATE` (today it relies on the neighbouring golden test to catch a
   both-sides-empty regression).
-- **N52 (T11 correctness edges — pin in the prune-soundness test):** guard `max_nodes == 0`
-  (`--min-nodes 0` is reachable via CLI) before dividing; and pin the **boundary** — the gate is
-  `score >= threshold`, so prune only when `min < threshold × max`, never on equality. Express as the
-  named predicate per N32 and compare via `(min as f64) >= threshold * (max as f64)`.
+- **N52 — ⚠ RETRACTED AS UNSOUND; see "T11 review notes" for the restated note.** ~~guard `max_nodes == 0`
+  … prune only when `min < threshold × max` … compare via `(min as f64) >= threshold * (max as f64)`.~~
+  Both halves were wrong — do not implement either.
 - **N53 (T11 payoff, recommended):** N31 already established the pre-sort is not load-bearing for
   determinism — so iterate fragments in **node-count order** and `break` the inner loop once the ratio
   can no longer admit. That turns the pre-filter from O(n²) predicate evaluations into an early exit,
@@ -448,3 +447,89 @@ of T11 so the pre-filter has a before/after number; N41 (pre-1.0-unstable doc co
 **Open ledger after T7b:** N14/N15/**N27** (scoring, before D5; N27 blocking) · N23/N30 (T8, w/ free `u32`
 win) · N31/N32/N33/N34/N40 (record/T11/T12) · N41 (with T8) · N46 (record) · N47 (start of T11) ·
 **N48/N49/N50(a)** (SSOT fixes, with T11) · N51 (test tightening) · N52/N53 (T11) · N55 (scoring-pass churn).
+
+### T11 review notes (Anders — APPROVE-WITH-NOTES; nothing blocks T8)
+
+T11 verified PASS by Bhaskar (full gate; 94 tests) after one FAIL–fix cycle. **N47 release timings:
+0.99s → 0.20s (defaults), 1.22s → 0.24s (stress) ≈ 4.7–5.5×;** the old "~2 min" debug figure is void.
+
+**N52 — RETRACTED AND RESTATED (my note was unsound; Bhaskar caught it).** The original N52 read:
+*"guard `max_nodes == 0` … before dividing; and pin the boundary … prune only when `min < threshold × max`
+… compare via `(min as f64) >= threshold * (max as f64)`."* **Both halves were wrong.** Do not implement
+either. Superseded by:
+
+> **N52 (restated, T11 — the admissible pre-filter, as landed).** Express the pre-filter as a named pure
+> predicate beside `passes_floors` (N32) that **evaluates the frozen `similarity` itself at the minimal
+> feasible delta**: `similarity(max − min, min, max) >= threshold`. Do **not** compare the algebraically
+> equal ratio `min/max` against the threshold in any multiplied or divided form. Rationale:
+> `threshold * (max as f64)` is a *separately rounded* product and is not conservative — for
+> `min = 212, max = 685, threshold = similarity(473, 212, 685)` it yields `212.00000000000003`, pruning a
+> pair the `score >= threshold` gate accepts by exact equality; empirically this dropped three genuine
+> equality matches at threshold `0.6666666666666667`. Calling `similarity` makes the pre-filter boundary
+> **bit-identical** to the gate rather than merely close, so no epsilon or slack term is needed.
+> Soundness: δ ≥ max − min under unit costs, and `similarity` is weakly monotone non-increasing in δ *in
+> f64* (both `2δ` and `min+max+δ` are exactly representable at every reachable node count, so the
+> division is the correctly-rounded image of an exactly-increasing quantity; correct rounding, `1.0 − r`
+> and `clamp` are all monotone). Hence `score >= threshold ⟹ bound >= threshold`, for all counts and all
+> thresholds. **No `max == 0` guard**: it was unfalsifiable and redundant — `similarity(0,0,0)` takes the
+> frozen function's own `denominator == 0` branch and returns `1.0`. Zero-node fragments are **not**
+> production-reachable (`NormTree::node_count` is `1 + descendants`; `--min-nodes 0` only relaxes a
+> filter, it cannot conjure one) — the original N52's parenthetical claiming otherwise was also wrong.
+> The zero case is defensive contract coverage only and must be labelled as such in its test.
+
+*Process point, recorded deliberately:* a review note prescribed a **literal expression** for a
+numerically delicate predicate. That was the error — the note should have prescribed the *invariant*
+("never prune on equality; the pre-filter boundary must coincide with the gate boundary") and left the
+expression to implementation and verification. Future review notes: specify contracts, not float
+expressions.
+
+- **N56 (do with T8 — the pre-filter's two load-bearing invariants are undocumented at their source).**
+  The soundness argument now lives entirely in `detect`'s doc comment, i.e. in the consumer, while both
+  premises live elsewhere and are stated nowhere as contracts: (a) `ted::distance` never documents
+  `δ ≥ | |T₁| − |T₂| |` under unit costs — add it to `distance`'s doc as an invariant any replacement
+  engine must preserve (R1 keeps TED swappable, so this is the exact thing a swap would silently
+  break); (b) `similarity`'s module doc mentions monotonicity as a property — promote it to a stated
+  contract naming its dependent ("`detect`'s size-ratio pre-filter relies on weak monotone
+  non-increase in δ; changing this is a pruning-soundness change, not just an R3 score change").
+  Docs only; no code motion, no new module.
+- **N57 (naming, cheap, T8).** `size_ratio_admits` no longer computes a ratio. Either rename to
+  `could_reach_threshold`, or — preferred — split the value out: `fn best_possible_score(nodes_a,
+  nodes_b) -> f64` returning `similarity(max − min, min, max)`, with the call site reading
+  `best_possible_score(a, b) >= opts.threshold`. Names the *bound* as a first-class value, makes the
+  parallel with the gate visually exact, and gives T12 something to instrument. Non-blocking.
+- **N58 (fail-fast on the N53 coupling — do with T8).** The `break` is sound **only** because `kept` is
+  sorted with `node_count` as the primary key; nothing enforces that adjacency. A future re-sort (or a
+  return to N31's canonical-key-only order) silently converts the optimization into a correctness bug
+  that only large corpora would reveal. Add an N26-style `debug_assert!` that `kept`'s node counts are
+  non-decreasing before the loop: free in release, loud in dev/test.
+- **N59 (N47 scope — bounds what T12 may claim).** ~4.7–5.5× is a **constant-factor** result on a single
+  small corpus; the pre-filter's asymptotics are unexercised at this n. It does **not** discharge R1.
+  Re-scope T12: a scaling curve (time vs fragment count across synthesized corpora of growing n) plus the
+  documented complexity envelope — not a single-point stopwatch. Re-take numbers after T8 (R7 multiplies
+  fragment count) and after the scoring pass; today's figures are a T11 checkpoint, not a T12 baseline.
+- **N60 (test-doc precision, record only).** `similarity_never_exceeds_the_size_ratio_bound` asserts
+  against `min/max` with a `1e-12` epsilon while production carries none. Fine — it pins the *algebraic*
+  claim, not the predicate — but label it so. The predicate's own soundness is pinned by
+  `a_pruned_pair_could_never_have_passed_the_threshold` and the equality counterexample test, both
+  epsilon-free.
+- **N30 (wording touch-up, with T8):** reads "the T7 wiring"; that is now `lib::run` (composition root per
+  N42/N48). Placement decision unchanged.
+
+**Architecture:** `detect` calling `similarity` to evaluate a bound adds no new dependency edge and does
+not blur the core seam — `detect` already owns the ted+similarity composition (N21), and `similarity` is
+a pure function evaluated at a hypothetical δ. Only the bound's *provenance* is under-expressed (N56).
+
+**`tests/discovery.rs` deletion: right call.** N49 offered two doors and Dave took the preferred one; an
+integration test cannot survive `pub(crate)` without re-widening the very surface it was flagged for.
+Coverage is intact and in places stronger (the N44 test is now byte-equality against a clean baseline).
+
+**Sequencing — confirmed unchanged: T8 (+N23/N30 ceiling in `lib::run`, +N26/N23 `u32` cells, +N41
+pre-1.0-unstable doc comments, +N56/N57/N58) → N27/N14/N15 scoring pass (one commit, N55) → T9/T10 →
+D5 calibration → T12 (re-scoped per N59).** Rejected alternative: T9 immediately after T8 — worse, the
+scoring pass would churn T9/T10's golden fixtures a second time.
+
+**Landed with T11 and closed:** N47, N48, N49, N50(a), N51, N52 (restated), N53.
+
+**Open ledger after T11:** N14/N15/**N27** (scoring pass, before D5; N27 blocking) · N23/N30 (T8) ·
+N31/N33/N34/N40 (record/T12) · N41 (with T8) · N46 (record) · N55 (scoring-pass churn) · **N56/N57/N58**
+(with T8) · N59 (rescopes T12) · N60 (record).
