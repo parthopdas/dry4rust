@@ -1,6 +1,6 @@
 # Feature: Duplicate Code Detection (TED core, dry4go UX skin)
 **Branch:** vibe/001-duplicate-code-detection
-**Status:** Planning
+**Status:** WIP — **S1 DONE** (confirmed by Anders at T7b); next: T11 → T8 → scoring pass → T9/T10 → D5 → T12
 
 ## Requirements
 
@@ -63,7 +63,7 @@ A slice is defined in `docs/meta-design.md` — each is independently runnable/v
 |-------|---------|------------|
 | S1 | **Runnable CLI**: discover `.rs` (honor `.gitignore`, skip `/target`) → parse → extract free functions + methods → TED + similarity → threshold/min-lines/min-nodes gate → byte-parity text & json → exit 0. Deterministic output. | - |
 | S2 | Extend extraction to `impl` block bodies, closures, free `{}` blocks; apply containment-dedup policy. | S1 |
-| S3 | Performance & scaling: admissible size-ratio pre-filter + guardrail benchmark; (optional, de-scopable). | S1, S2 |
+| S3 | Performance & scaling: admissible size-ratio pre-filter + guardrail benchmark; (optional, de-scopable). | S1 (T11); S1+S2 (T12) — see N50(b) |
 
 ## Tasks (Tx)
 
@@ -79,7 +79,7 @@ built binary against fixture trees.
 | T5  | S1 | Detect orchestration: pairwise compare, apply min-lines/min-nodes filters + threshold gate, canonical `(left,right)` ordering, deterministic candidate ordering. **Unit:** filter application + determinism. | Done | 4570f12 |
 | T6  | S1 | Report adapter: text (2 dp) + json (raw f64, exact key order) byte-parity. **Unit:** golden-string assertions for both formats. | Done | ffa28a3 |
 | T7  | S1 | CLI wiring (`clap`): flags/aliases, TED defaults, format selection, `anyhow` error mapping, exit 0 on success / non-zero on usage+internal. **Integration:** run binary on fixture dir, assert text & json stdout. | Done | be5128b |
-| T7b | S1 | Close S1 test gaps before stamping S1 done: **N43** CRLF-invariance (`\n` vs `\r\n` fixture → byte-identical report), **N44** `.gitignore`/`target/` skipping exercised through `run()`, **N45** exit-1 at the binary level. Also **N42** design.md drift (name lib.rs composition-root role). | Pending | - |
+| T7b | S1 | Close S1 test gaps before stamping S1 done: **N43** CRLF-invariance (`\n` vs `\r\n` fixture → byte-identical report), **N44** `.gitignore`/`target/` skipping exercised through `run()`, **N45** exit-1 at the binary level. Also **N42** design.md drift (name lib.rs composition-root role). | Done | 400243a |
 | T8  | S2 | Extend extraction to `impl` block bodies, closures, free `{}` blocks. **Unit:** nested-fragment extraction + node counts. | Pending | - |
 | T9  | S2 | Containment-dedup policy (maximal-parent-wins, both-sides; identical-span dedup; deterministic tie-break). **Unit:** both-sided suppression; one-sided keep; identical-span dedup. | Pending | - |
 | T10 | S2 | **Integration:** fixture with duplicated nested closures/blocks → assert only maximal pairs reported. | Pending | - |
@@ -396,3 +396,55 @@ T8, jointly w/ T11) · N31/N32/N33/N34/N40 (record/T11/T12) · N41–N47 (see ab
    collapse into false matches; folded into the same pre-D5 scoring pass as N27.
 5. **Test-code noise: v1 reports everything** (matches dry4go). `--exclude` stays deferred (D2).
 6. **T7b: land N43/N44/N45 before stamping S1 done.** Next task.
+
+### T7b review notes (Anders — APPROVE-WITH-NOTES; **S1 DONE — CONFIRMED**)
+
+T7b verified PASS by Bhaskar (full gate; 88 tests). **Closed: N42, N43, N44, N45.** No production code
+changed — the three tests were gaps in *evidence*, not in behaviour, and all three pass without fixes
+(CRLF is invariant because the report emits only normalized paths + line numbers, never source bytes;
+that is now pinned rather than accidental). **S1 (Runnable CLI) is DONE**: every clause of S1's acceptance
+sentence — gitignore/`target` skipping, byte-parity text+JSON, determinism, exit codes — is exercised
+end-to-end. Remaining notes are doc-precision/test-tightening and cannot alter S1 behaviour.
+
+- **N48 (design.md wording — SSOT accuracy, fix with T11):** the new Composition-root bullet says
+  "everything below it stays IO-free" — **false**: `discovery` performs filesystem IO (traversal) by
+  construction; the rule that actually holds is *core* is IO-free. Reword to: reads file **contents**
+  (the only `read_to_string`); below it, **core** is IO-free and `discovery` is the only other module
+  touching the filesystem. Also "the single public façade" is imprecise — see N49.
+- **N49 (public surface drift):** `discover_rust_files` is `pub` **only** so `tests/discovery.rs` can call
+  it — a test-driven public item that contradicts N36 (one façade) and least-privilege. Either fold that
+  coverage into the existing `discovery` unit tests + `tests/facade.rs` and make it `pub(crate)`
+  (preferred), or record it in design.md as a deliberate second public item. Decide before the surface
+  hardens (ties N41).
+- **N50 (SSOT gaps, cheap):** (a) the exit-code contract **0 / 1 / 2** is now *pinned by tests* and
+  documented only in `main.rs` — promote a one-line table into design.md's Error-handling bullet;
+  (b) the Slices table still says S3 depends on "S1, S2", stale under the confirmed T11-before-T8 order —
+  mark T11 as depending on S1 only. *(b applied at T7b.)*
+- **N51 (test-tightening, non-blocking, land opportunistically):** N44's test asserts *shape* (one
+  `DUPLICATE`, forbidden substrings absent) where it could assert the **clean-baseline bytes** — same
+  pattern already used by the skipped-file test, strictly stronger. N45 should also assert stderr is
+  non-empty (exit 1 with no message would pass today). N43 would be non-vacuous *locally* if the LF side
+  asserted it contains `DUPLICATE` (today it relies on the neighbouring golden test to catch a
+  both-sides-empty regression).
+- **N52 (T11 correctness edges — pin in the prune-soundness test):** guard `max_nodes == 0`
+  (`--min-nodes 0` is reachable via CLI) before dividing; and pin the **boundary** — the gate is
+  `score >= threshold`, so prune only when `min < threshold × max`, never on equality. Express as the
+  named predicate per N32 and compare via `(min as f64) >= threshold * (max as f64)`.
+- **N53 (T11 payoff, recommended):** N31 already established the pre-sort is not load-bearing for
+  determinism — so iterate fragments in **node-count order** and `break` the inner loop once the ratio
+  can no longer admit. That turns the pre-filter from O(n²) predicate evaluations into an early exit,
+  which is where the real T11 win lives. Final `(left,right)` sort keeps output identical.
+- **N55 (sequencing warning for the pre-D5 scoring pass):** N27 + N14/N15 **change node counts and
+  scores** — the golden fixtures (`left_nodes: 23`, `score=1.00`, `score=0.87` dogfood) will churn. Land
+  the scoring pass as ONE commit, re-baseline the dogfood **after** it, and treat any earlier calibration
+  number as void. T11's prune-soundness test is score-agnostic and unaffected — another reason T11 first
+  is right.
+
+**Sequencing — unchanged and confirmed: T11 → T8 (+N23 ceiling per N30, +N26/N23 `u32` cells) →
+N27/N14/N15 scoring pass → T9/T10 → D5 calibration → T12.** Do N47 (`--release` dogfood) at the *start*
+of T11 so the pre-filter has a before/after number; N41 (pre-1.0-unstable doc comments on
+`RunOptions`/`RunOutput`) belongs with T8, which adds the ceiling field. N46 stays record-only.
+
+**Open ledger after T7b:** N14/N15/**N27** (scoring, before D5; N27 blocking) · N23/N30 (T8, w/ free `u32`
+win) · N31/N32/N33/N34/N40 (record/T11/T12) · N41 (with T8) · N46 (record) · N47 (start of T11) ·
+**N48/N49/N50(a)** (SSOT fixes, with T11) · N51 (test tightening) · N52/N53 (T11) · N55 (scoring-pass churn).
