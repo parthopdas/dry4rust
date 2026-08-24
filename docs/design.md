@@ -31,6 +31,10 @@ lib; dependencies flow **adapters → core**, never the reverse.
   - `parse` — `syn` → normalized tree + fragment extraction (**`syn` confined here**).
   - `discovery` — file walking via the `ignore` crate (**`ignore` confined here**).
   - `report` — text/json rendering via `serde`/`serde_json` (**serialization confined here**).
+- **Composition root (`lib`):** the crate root wires the pipeline together — it is the only place that
+  reads files from disk (discover → `read_to_string` → parse → detect → render) and exposes the single
+  public façade `run(&RunOptions) -> Result<RunOutput>`. It owns the per-file skip-with-diagnostic policy;
+  everything below it stays IO-free.
 - **Bin crate:** `cli` (clap parsing; **`clap` confined here**) + `main` (`anyhow` wiring, exit codes).
 
 Rule: core modules import no third-party crate and perform no IO; adapters depend on core; the bin

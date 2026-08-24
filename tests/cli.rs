@@ -178,6 +178,17 @@ fn usage_errors_exit_non_zero_with_empty_stdout() {
     }
 }
 
+/// The third exit code: a whole-run failure (here, a root that does not exist)
+/// bubbles through `anyhow` to exit 1 — distinct from clap's usage exit 2.
+#[test]
+fn a_whole_run_failure_exits_one_with_empty_stdout() {
+    let dir = duplicate_pair_tree();
+    let output = dry4rust(dir.path(), &["does-not-exist"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+}
+
 #[test]
 fn help_renders_the_defaults() {
     let dir = duplicate_pair_tree();

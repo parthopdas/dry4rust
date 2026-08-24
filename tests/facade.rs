@@ -170,6 +170,60 @@ fn an_unparsable_file_is_skipped_with_a_diagnostic_and_does_not_change_stdout() 
     assert!(!with_broken.diagnostics[0].contains('\n'));
 }
 
+/// A7/R6: line endings must not perturb the report. The same fixture written
+/// with `\n` and with `\r\n` must produce byte-identical output (CI runs
+/// Windows, where `autocrlf` can rewrite checkouts).
+#[test]
+fn crlf_and_lf_fixtures_produce_byte_identical_reports() {
+    let lf = duplicate_pair_tree();
+    let crlf = TempDir::new().expect("create temp dir");
+    write(crlf.path(), "a.rs", &LEFT.replace('\n', "\r\n"));
+    write(crlf.path(), "b.rs", &RIGHT.replace('\n', "\r\n"));
+
+    for format in [Format::Text, Format::Json] {
+        // The only legitimate difference is the temp-dir prefix; strip it so
+        // the remaining bytes must match exactly.
+        let from_lf = run_on(lf.path(), format)
+            .report
+            .replace(&prefix(lf.path()), "");
+        let from_crlf = run_on(crlf.path(), format)
+            .report
+            .replace(&prefix(crlf.path()), "");
+
+        assert_eq!(
+            from_lf, from_crlf,
+            "line endings changed the {format:?} report"
+        );
+    }
+}
+
+/// S1 acceptance: `.gitignore`d files and `target/` are skipped end-to-end
+/// through the façade, not just inside the discovery adapter (N44).
+#[test]
+fn gitignored_and_target_copies_are_skipped_through_the_facade() {
+    let dir = duplicate_pair_tree();
+    // Extra copies of `a.rs` that must never be discovered — each would
+    // otherwise pair with `a.rs` and `b.rs` and add DUPLICATE blocks.
+    write(dir.path(), ".gitignore", "ignored.rs\n");
+    write(dir.path(), "ignored.rs", LEFT);
+    write(dir.path(), "target/debug/copy.rs", LEFT);
+
+    let output = run_on(dir.path(), Format::Text);
+
+    assert_eq!(
+        output.report.matches("DUPLICATE").count(),
+        1,
+        "got: {}",
+        output.report
+    );
+    assert!(
+        !output.report.contains("ignored.rs"),
+        "got: {}",
+        output.report
+    );
+    assert!(!output.report.contains("target/"), "got: {}", output.report);
+}
+
 #[test]
 fn a_missing_root_fails_the_whole_run() {
     let dir = TempDir::new().expect("create temp dir");
