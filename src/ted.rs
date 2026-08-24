@@ -12,9 +12,6 @@
 //! the **keyroots**. Detect (T5) runs this over O(n²) fragment pairs, so those
 //! arrays are derived **once per tree** into a [`PreparedTree`] and reused
 //! across every pair; [`distance`] takes two already-prepared trees.
-//!
-//! Bridged with `#![allow(dead_code)]` until the CLI (T7) wires the pipeline.
-#![allow(dead_code)]
 
 use crate::tree::{Label, NormTree};
 

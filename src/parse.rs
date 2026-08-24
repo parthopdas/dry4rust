@@ -7,9 +7,7 @@
 //! a function body is still lowered as part of that function's tree.
 //!
 //! Lowering canonicalizes identifiers/literals and preserves structure; see
-//! [`crate::tree`] for the normalization contract. Bridged with
-//! `#![allow(dead_code)]` until the CLI (T7) wires the pipeline.
-#![allow(dead_code)]
+//! [`crate::tree`] for the normalization contract.
 
 use proc_macro2::LineColumn;
 use syn::spanned::Spanned;

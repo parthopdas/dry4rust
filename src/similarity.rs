@@ -9,9 +9,6 @@
 //! everything, insert everything); it is symmetric in the two node counts.
 //! The value is returned raw — rounding for display is the report adapter's
 //! job (T6).
-//!
-//! Bridged with `#![allow(dead_code)]` until the CLI (T7) wires the pipeline.
-#![allow(dead_code)]
 
 /// Normalized similarity in `[0,1]` for an edit distance and two node counts.
 ///

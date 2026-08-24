@@ -7,9 +7,6 @@
 //! scored with `ted` + `similarity` composed here (N21), and pairs at or above
 //! the threshold become [`Candidate`]s ordered by canonical `(left, right)`
 //! key. Containment/identical-span dedup is a separate policy (`dedup`).
-//!
-//! Bridged with `#![allow(dead_code)]` until the CLI (T7) wires the pipeline.
-#![allow(dead_code)]
 
 use crate::model::{Analyzed, Candidate, Fragment};
 use crate::similarity::similarity;

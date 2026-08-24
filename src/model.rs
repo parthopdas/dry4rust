@@ -11,6 +11,11 @@ use crate::tree::NormTree;
 ///
 /// EXTENDED granularity grows this in S2 (closures, `impl` bodies, free
 /// blocks); S1 only distinguishes free functions from methods.
+///
+/// N10 — extraction provenance: asserted by parse tests, deliberately not
+/// emitted (dry4go parity has no kind field); D7's de-scope lever filters on
+/// it. Hence a narrow item/field-level allow rather than a module-level one.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FragmentKind {
     /// A free function (`fn foo() { .. }`).
@@ -36,6 +41,11 @@ pub(crate) struct Fragment {
     /// Number of source lines the fragment spans.
     pub(crate) line_count: usize,
     /// The kind of element this fragment was extracted from.
+    ///
+    /// N10 — extraction provenance: asserted by parse tests, deliberately not
+    /// emitted (dry4go parity has no kind field); D7's de-scope lever filters
+    /// on it.
+    #[allow(dead_code)]
     pub(crate) kind: FragmentKind,
 }
 

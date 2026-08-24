@@ -30,9 +30,6 @@
 //! (`vec![a, b]` vs `vec![c]`). Only the delimiter and whether the token stream
 //! is empty are preserved (see [`Label::Macro`]). Parsing macro bodies is out
 //! of scope for S1; this is a deliberate, recorded limitation.
-//!
-//! Bridged with `#![allow(dead_code)]` until TED/detect (T4/T5) consume it.
-#![allow(dead_code)]
 
 /// Whether a reference, raw-address or reference-pattern is mutable.
 ///

@@ -77,8 +77,8 @@ built binary against fixture trees.
 | T3  | S1 | Parse adapter (`syn` → normalized label tree) + fragment extraction for free functions & methods (inherent/trait-impl/trait-default); node counting; identifier/literal canonicalization. **Unit:** source→fragments + node counts. | Done | 4c55c8f |
 | T4  | S1 | TED engine (Zhang–Shasha, unit cost) + similarity normalization (pure, std-only). **Unit:** known small trees→known δ; identical→1.0; disjoint→0.0; symmetry. | Done | 411b0a5 |
 | T5  | S1 | Detect orchestration: pairwise compare, apply min-lines/min-nodes filters + threshold gate, canonical `(left,right)` ordering, deterministic candidate ordering. **Unit:** filter application + determinism. | Done | 4570f12 |
-| T6  | S1 | Report adapter: text (2 dp) + json (raw f64, exact key order) byte-parity. **Unit:** golden-string assertions for both formats. | Done | (next) |
-| T7  | S1 | CLI wiring (`clap`): flags/aliases, TED defaults, format selection, `anyhow` error mapping, exit 0 on success / non-zero on usage+internal. **Integration:** run binary on fixture dir, assert text & json stdout. | Pending | - |
+| T6  | S1 | Report adapter: text (2 dp) + json (raw f64, exact key order) byte-parity. **Unit:** golden-string assertions for both formats. | Done | ffa28a3 |
+| T7  | S1 | CLI wiring (`clap`): flags/aliases, TED defaults, format selection, `anyhow` error mapping, exit 0 on success / non-zero on usage+internal. **Integration:** run binary on fixture dir, assert text & json stdout. | Done | (next) |
 | T8  | S2 | Extend extraction to `impl` block bodies, closures, free `{}` blocks. **Unit:** nested-fragment extraction + node counts. | Pending | - |
 | T9  | S2 | Containment-dedup policy (maximal-parent-wins, both-sides; identical-span dedup; deterministic tie-break). **Unit:** both-sided suppression; one-sided keep; identical-span dedup. | Pending | - |
 | T10 | S2 | **Integration:** fixture with duplicated nested closures/blocks → assert only maximal pairs reported. | Pending | - |
@@ -338,3 +338,54 @@ T8), **N28/N29/N30/N36/N37/N38/N39** (T7 — implement now), **N31/N32/N33/N34/N
 T7 forces: N36 (façade), N37 (Format mapping), N38 (stdout write), N39 (R4 policy — decided), N28
 (threshold range), N29 (defaults in clap), N11 completion (module-level allows off → N10 field-level allow),
 N3 (non_exhaustive).
+
+### T7 review notes (Anders — APPROVE-WITH-NOTES; **S1 DONE: yes, conditionally**)
+
+T7 verified PASS by Bhaskar (full gate, 85 tests; S1 acceptance cruxes — skipped-file stdout-invariance +
+exact end-to-end text/JSON golden bytes — both tested). Façade `run(&RunOptions)->Result<RunOutput{report,
+diagnostics}>`; public surface exactly {error, discover_rust_files, Format, RunOptions, RunOutput, run}.
+**Closed by T7:** N3, N10 (as decided), **N11 (FULLY closed** — zero module-level allows; only the two
+narrow justified `FragmentKind`/`Fragment::kind` allows remain), N28, N29, N36, N37, N38, N39. **N30**
+dormant (prescribes ceiling placement IF N23 picks one).
+
+**Dogfood signal (D5/R1):** `dry4rust src` (debug) found 3 real pairs incl. two `fragment(...)` test builders
+at 0.87 — 0.75 fired on genuine copy-paste, no obvious false positives. BUT: debug timing (~2 min) is NOT
+usable for perf decisions (N47 — re-run `--release` first, likely 3–10 s); and the flagged pairs are
+macro-heavy TEST bodies (exactly what N19 predicted — macros lower to leaves).
+
+- **N41 (façade stability — one-line decision):** `RunOptions` WILL gain a field at T8 (N23/N30 ceiling);
+  `RunOutput` likely gains one at D3 (exit-gate needs a candidate count, not just a String — note the public
+  seam is a *renderer*, not a *detector*). Declare both structs pre-1.0 unstable in doc comments (single
+  consumer) rather than building a builder/`#[non_exhaustive]`. Also decide T12's measurement seam
+  (recommend: bench end-to-end through `run` — TED dominates, IO is noise).
+- **N42 (design.md drift — SSOT fix):** `lib.rs` is now the composition root that performs file IO — a fourth
+  role design.md's Architecture section doesn't name (only core/adapters/bin). Add it (golden rule #1).
+- **N43 (S1 determinism gap — DO BEFORE STAMPING S1):** CRLF-invariance is claimed by A7/R6 but UNTESTED.
+  `read_to_string` preserves `\r\n` (works correct-by-accident). One test: `\n` vs `\r\n` fixture →
+  byte-identical report. Highest-value remaining S1 test (CI runs Windows w/ autocrlf).
+- **N44 (S1 coverage gap — DO BEFORE STAMPING S1):** `.gitignore`/`target/` skipping is unit-tested in
+  discovery but NEVER exercised through `run`, despite being in S1's acceptance sentence. Tree with a dup pair
+  + a `target/` copy + a gitignored copy → assert stdout has exactly one DUPLICATE block.
+- **N45 (exit-code gap):** exit 1 (whole-run failure) untested at the BINARY level; only 0 and 2 pinned.
+- **N46 (record only):** a broken STDERR pipe returns Err→exit 1, asymmetric with stdout's BrokenPipe
+  tolerance. Cosmetic/rare; noted so it isn't "fixed" accidentally.
+- **N47 (blocks R1 reasoning):** re-run dogfood in `--release` before any perf decision. Debug figure is not
+  evidence.
+
+**Anders sequencing recommendation:** **T11 (size-ratio prefilter) BEFORE T8**, then T8 → T9/T10 → T12.
+Rationale: T11 is *admissible* (provably identical results — can't invalidate prior work or calibration),
+small, and its payoff is largest exactly when T8 widens the size spread — so it must be in place BEFORE T8,
+not after. Take N23's free win alongside: TED cells fit in `u32` (δ ≤ n+m), halving matrix memory. **N27 is
+now BLOCKING before D5** — the `_ => "?"` operator fallback inflates scores, so calibrating a threshold
+against current scores calibrates the wrong number.
+
+**Open ledger after T7:** N14/N15/**N27** (scoring/product, before D5; N27 now blocking) · N23 (revisit at
+T8, jointly w/ T11) · N31/N32/N33/N34/N40 (record/T11/T12) · N41–N47 (see above; N43/N44 before stamping S1).
+
+**Product decisions pending (human) — surfaced at pause:**
+1. Slice reorder: T11 before T8? (Anders recommends yes — admissible, protects T8 from R1/N23.)
+2. N23 at T8: node ceiling (skip+stderr per N30) vs accept-and-document? (alloc-failure aborts — hard edge.)
+3. N27 before D5 — confirm operator enums fixed before threshold calibration.
+4. N14/N15 — `async`/`const`/`unsafe fn` + receiver form, and statement semicolon: preserve or out of scope?
+5. Test-code noise: v1 reports everything (Anders recommends, matches dry4go) vs `--exclude` graduates from D2?
+6. (Housekeeping) Land N43/N44/N45 as a small T7b before stamping S1 fully done.

@@ -8,7 +8,11 @@
 use thiserror::Error;
 
 /// Errors returned by the `dry4rust` library.
+///
+/// `#[non_exhaustive]` (N3): the variant set is expected to grow, so downstream
+/// matches must carry a wildcard arm and stay source-compatible.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     /// An I/O failure while discovering or reading a source file.
     #[error("i/o error at {path}: {source}")]

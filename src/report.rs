@@ -8,9 +8,6 @@
 //!
 //! Candidates are rendered in the order given: `detect` has already sorted them
 //! deterministically, so this module never re-sorts.
-//!
-//! Bridged with `#![allow(dead_code)]` until the CLI (T7) calls `render`.
-#![allow(dead_code)]
 
 use serde::Serialize;
 
@@ -18,8 +15,12 @@ use crate::error::{Error, Result};
 use crate::model::{Candidate, Fragment};
 
 /// Output format selected by the CLI (`--format text|json`, `--json`, `--text`).
+///
+/// Re-exported from the crate root as part of the [`crate::run`] façade (N36).
+/// It deliberately carries no `clap` derive — the binary owns its own
+/// `ValueEnum` and maps onto this (N37), keeping `clap` out of the adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Format {
+pub enum Format {
     /// Human-readable `DUPLICATE score=…` blocks.
     Text,
     /// Pretty-printed JSON (2-space indent).
