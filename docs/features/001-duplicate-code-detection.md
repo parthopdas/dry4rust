@@ -72,7 +72,7 @@ built binary against fixture trees.
 
 | #   | Slice | Task | Status | Commit |
 |-----|-------|------|--------|--------|
-| T1  | S1 | Scaffold lib+bin crates (edition 2021), deps (`syn`, `ignore`, `clap`, `thiserror`, `anyhow`, `serde`, `serde_json`), module skeleton, `error` types. No behavior. | Pending | - |
+| T1  | S1 | Scaffold lib+bin crates (edition 2021), deps (`syn`, `ignore`, `clap`, `thiserror`, `anyhow`, `serde`, `serde_json`), module skeleton, `error` types. No behavior. | Done | 0411756 |
 | T2  | S1 | Domain model (`Fragment`, `Candidate`) + discovery adapter (`ignore` crate: walk `*.rs`, honor `.gitignore`, skip `/target`, normalize paths to `/`). **Unit:** filtering + path normalization. **Integration:** temp tree with `.gitignore`. | Pending | - |
 | T3  | S1 | Parse adapter (`syn` → normalized label tree) + fragment extraction for free functions & methods (inherent/trait-impl/trait-default); node counting; identifier/literal canonicalization. **Unit:** source→fragments + node counts. | Pending | - |
 | T4  | S1 | TED engine (Zhang–Shasha, unit cost) + similarity normalization (pure, std-only). **Unit:** known small trees→known δ; identical→1.0; disjoint→0.0; symmetry. | Pending | - |
@@ -144,3 +144,14 @@ built binary against fixture trees.
   cannot pass and is safely skipped before running TED. Results are identical with or without it.
 - Left/right within a pair are assigned by canonical `(path,start_line,end_line)` order (smaller = left)
   so output is stable regardless of traversal order.
+
+### T1 review notes (Anders — approve-with-suggestions, non-blocking)
+
+- **N1 (core-purity unenforced):** adapters→core is convention + `pub(crate)` + clippy only (single-package
+  per D6). Cheap later guardrail: a test/CI grep asserting core modules (`tree/ted/similarity/dedup/detect/
+  model/error`) contain no `use syn|ignore|clap|serde`. Optional, don't gold-plate.
+- **N2 (parse span, for T3):** fold `syn::Error` span (line/col) into `Error::Parse` message at construction
+  so location isn't lost despite the unstructured `String`.
+- **N3:** consider `#[non_exhaustive]` on `pub enum Error` (variants grow in T2–T7). Zero-cost future-proofing.
+- **N4 (serde seam, for T2+T6 — most important):** keep `#[derive(Serialize)]` OFF core `model` types;
+  `report` owns its own Serialize DTOs and maps from `model`, so serde stays confined to `report` (A5).
