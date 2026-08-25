@@ -111,10 +111,67 @@ built binary against fixture trees.
 
 - **A1:** Granularity = EXTENDED — free functions; methods (inherent + trait-impl + trait-default bodies);
   `impl` block bodies; closures; free `{}` blocks.
+  **Wrapper asymmetry (decision, N65):** `impl S { … }` emits an `ImplBlock` wrapper fragment covering the
+  whole block; `trait T { … }` emits **no** wrapper — only its default-body methods. This is deliberate,
+  not an oversight: an `impl` block is *entirely* code, so its wrapper is a real, copyable unit (two copied
+  `impl`s are a clone of the block, not merely of its methods), whereas a `trait` definition is mostly
+  *signatures* — a wrapper over it would score trait pairs on their declaration shape (arity, receiver
+  forms, name-erased types) rather than on any duplicated logic, manufacturing findings that no edit could
+  remove. The consequence is accepted and bounded: the two constructs are scored at different granularities,
+  so a `trait`'s duplicated default bodies are reported method-by-method while a duplicated `impl` is
+  reported once at the block (T9's dedup collapses its method-level echoes).
 - **A2:** TED default `--threshold 0.75` with metric normalization
   `sim = 1 − 2δ/(|T₁|+|T₂|+δ)`, δ = unit-cost (ins/del/relabel = 1) tree-edit distance.
-- **A3:** Containment-dedup = maximal-parent-wins when containment holds on **both** sides; identical-span
-  pairs de-duplicated; one-sided containment keeps both; deterministic `(path,start,end)` tie-break.
+- **A3 (restated at T9 per N68):** Containment-dedup operates on **pair-vs-pair** containment only.
+  Two distinct containment relations exist and must not be conflated — conflating them is what let the
+  N61/N68 bug through at T8:
+  1. **Intra-pair containment** — *one* pair whose left contains its right (necessarily the same file:
+    a fragment against its own ancestor, e.g. a single-method `impl` vs that method). This is **not
+    dedup's business**. Such a pair is removed at **admission**, pre-TED, by `detect`'s `spans_overlap`
+    (N61). Dedup never sees it and could not reach it.
+  2. **Pair-vs-pair containment (dedup's whole job)** — pair `P` **dominates** pair `Q` iff,
+    **side-for-side after canonical assignment** (`left` = the canonically-smaller `(path,start,end)`
+    fragment, `right` the larger — assigned by `detect`, so both pairs are compared in the same
+    orientation and `(A,B)` vs `(B,A)` cannot arise), `Q.left ⊆ P.left` **and** `Q.right ⊆ P.right`,
+    where `X ⊆ Y` means *same path* and `Y.start ≤ X.start ≤ X.end ≤ Y.end` — **equality is allowed on a
+    side** — and `P ≠ Q`. A dominated `Q` is **suppressed**; maximal parents win. Equality-on-a-side is
+    what removes the cross-granularity crosses: two copies of a single-method `impl` yield four findings
+    (`impl↔impl`, `m↔m`, and two `impl↔m` crosses at ~0.96), and the crosses are strict on one side and
+    **equal** on the other, so only clause 2 suppresses them. **Accepted cost (N82):** because the
+    maximal parent wins, a reported span is the *larger* one and may include wrapper lines that are
+    not themselves duplicated (the `impl` header/closing brace around a duplicated method). This is a
+    deliberate trade, not an oversight: the wrapper demonstrably *contains* the duplicate, and
+    reporting the fragment-level pair instead would restore the redundant nested findings A3 exists
+    to remove.
+  3. **"Keeps both" narrows to:** containment on one side and **disjoint or partially overlapping** on
+    the other. That is a genuine second finding, not an artifact, and is retained.
+  4. **Identical on both sides** ⇒ collapse to one, keeping the **highest-scoring** pair. This clause
+    is *reachable from `detect`*, not defensive: two **distinct** fragments can share a line span (an
+    `impl` and its only method when they share a closing line), so `detect` — which emits each
+    unordered *fragment* pair once — can still emit several *candidate* pairs carrying the same
+    `(left.(path,start,end), right.(path,start,end))` key. Those pairs contain each other, so without
+    a tie-break they would annihilate and the finding would vanish. The key cannot break its own tie,
+    so the tie-break runs over the **rendered values** in order: score first, then the two node counts
+    (emitted as `left_nodes`/`right_nodes` — higher wins; same-span candidates really do differ here,
+    since a brace-sharing `impl` has exactly one node more per side than its only method). **Incoming
+    position is the last resort** and is reached only for candidates whose spans tie, whose scores
+    compare neither `Greater` nor `Less`, *and* whose two node counts tie. For **every score
+    `similarity` can produce** — all of them finite — that middle condition *means* the scores are
+    equal, so such candidates render identically; they can still differ in `kind` and `line_count`,
+    which are deliberately not emitted (N10/N8) — so the *rendered report* is a function of the
+    candidate **set**, while *which* struct instance survives is not. Were `kind` or `line_count`
+    ever emitted, they would have to join the tie-break. The one exception is excluded on
+    reachability, not absorbed: a `NaN` score reaches the fallback without tying, and still renders
+    differently (`NaN` vs a finite score) at identical spans and node counts — but `similarity`
+    cannot produce one, since every `usize → f64` conversion in it is
+    finite, the sole zero-denominator case returns `1.0`, the denominator is otherwise strictly
+    positive, and the result is clamped to `[0,1]`.
+
+  Dominance so defined is a strict partial order (span containment is transitive, and mutual dominance
+  forces span equality, handled by clause 4), so the surviving set is exactly its maximal elements —
+  no cascade or fixed-point iteration is needed. Irreflexivity needs no separate `P ≠ Q` guard: a pair
+  against itself runs all three tie-break steps — equal score, equal node counts — and the final
+  positional comparison is strict at an equal position, so it is `false`.
 - **A4:** Discovery honors **in-tree** `.gitignore` via `ignore` (machine-global/parent gitignores
   disabled for cross-machine determinism — see N5); scans `*.rs`; **skips any directory named `target`
   at any depth** (accepted over root-only `/target` — correct for nested-workspace `target/` dirs; N7).

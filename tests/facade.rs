@@ -43,6 +43,23 @@ const LONE: &str = "fn describe(flag: bool) -> String {
 }
 ";
 
+/// A single-method `impl`: `Impl(F)` vs `F` differs by one node, so the
+/// `impl`↔method pair scores ~0.95 and would sail through the 0.75 gate.
+const SINGLE_METHOD_IMPL: &str = "struct Counter {
+    seen: u32,
+}
+
+impl Counter {
+    fn classify(&mut self, flag: bool) -> String {
+        self.seen += 1;
+        match flag {
+            true => String::from(\"yes\"),
+            false => String::from(\"no\"),
+        }
+    }
+}
+";
+
 fn write(root: &Path, rel: &str, contents: &str) {
     let path = root.join(rel);
     if let Some(parent) = path.parent() {
@@ -272,17 +289,62 @@ fn a_fragment_exactly_at_the_ceiling_is_kept() {
 }
 
 /// N61: a single-method `impl` must not report a DUPLICATE against its own
-/// method. `Impl(F)` vs `F` differs by one node, so the pair scores ~0.95 and
-/// would sail through the 0.75 gate; `detect` drops it at admission because the
-/// two fragments overlap in source. The genuine cross-file clone still reports.
+/// method — `detect` drops that pair at admission because the two fragments
+/// overlap in source. The genuine cross-file clone still reports.
 #[test]
 fn a_single_method_impl_does_not_pair_with_its_own_method() {
     let dir = duplicate_pair_tree();
     let at = prefix(dir.path());
-    write(
-        dir.path(),
-        "wrapper.rs",
-        "struct Counter {
+    write(dir.path(), "wrapper.rs", SINGLE_METHOD_IMPL);
+
+    let output = run_on(dir.path(), Format::Text);
+    assert_eq!(
+        output.report,
+        format!("DUPLICATE score=1.00\n  {at}a.rs:1-9\n  {at}b.rs:1-9\n"),
+        "expected exactly the cross-file clone"
+    );
+    assert!(output.diagnostics.is_empty());
+}
+
+/// The separate property (N86d): when that same `impl` *is* duplicated across
+/// files, the whole `run` path reports the **maximal** `impl↔impl` pair only.
+///
+/// Post-dedup expectation, **not** the non-vacuity evidence (N51). Since T9 the
+/// four cross-file findings collapse to the maximal `impl↔impl` (N68), so only
+/// 5-13 is reported; `!contains(6-12)` would also pass if the 6-12 method
+/// stopped being extracted at all, and it is vacuous on its own. The evidence
+/// that 6-12 clears the floors and does pair lives at the core seam, in
+/// `dedup::tests::two_copied_single_method_impls_go_from_four_findings_to_one`
+/// (pre-dedup: four findings, 6-12 among them) — and that is the *only*
+/// evidence for 6-12: this probe cannot show it survives, since it would still
+/// pass if 6-12 were discarded before detection. What this probe uniquely
+/// covers is discovery → file read → the composition root's `max_nodes` filter
+/// for the one **observable surviving** finding, i.e. that 5-13 comes through
+/// the whole `run` path.
+#[test]
+fn a_copied_single_method_impl_reports_only_the_maximal_impl_pair() {
+    let dir = duplicate_pair_tree();
+    let at = prefix(dir.path());
+    write(dir.path(), "wrapper.rs", SINGLE_METHOD_IMPL);
+    write(dir.path(), "copy.rs", SINGLE_METHOD_IMPL);
+
+    let with_copy = run_on(dir.path(), Format::Text);
+    assert!(with_copy.report.contains(&format!("{at}copy.rs:5-13")));
+    assert!(!with_copy.report.contains(&format!("{at}copy.rs:6-12")));
+}
+
+/// T10 (N68/N79) — the sole end-to-end evidence for A3 clause 2. Two files,
+/// each holding **one single-method `impl`**, duplicated between them. Before
+/// dedup `detect` emits **four** findings — `impl↔impl`, `m↔m`, and the two
+/// `impl↔m` crosses at ~0.96, which are strict on one side and *equal* on the
+/// other. After dedup exactly **one** survives, the maximal `impl↔impl`.
+///
+/// The pre-dedup count of four is not observable through the façade (dedup is
+/// inside `run`); it is pinned at the core seam in `src/dedup.rs`. This test
+/// pins the post-dedup report **bytes**, which is what a user sees.
+#[test]
+fn two_copied_single_method_impls_report_one_finding() {
+    let single_method_impl = "struct Counter {
     seen: u32,
 }
 
@@ -295,28 +357,21 @@ impl Counter {
         }
     }
 }
-",
-    );
+";
+    let dir = TempDir::new().expect("create temp dir");
+    let at = prefix(dir.path());
+    write(dir.path(), "a.rs", single_method_impl);
+    write(dir.path(), "b.rs", single_method_impl);
 
     let output = run_on(dir.path(), Format::Text);
+
+    // Exactly the `impl↔impl` block pair — the method echo and both
+    // cross-granularity crosses are gone.
     assert_eq!(
         output.report,
-        format!("DUPLICATE score=1.00\n  {at}a.rs:1-9\n  {at}b.rs:1-9\n"),
-        "expected exactly the cross-file clone"
+        format!("DUPLICATE score=1.00\n  {at}a.rs:5-13\n  {at}b.rs:5-13\n")
     );
     assert!(output.diagnostics.is_empty());
-
-    // Non-vacuous (N51): both the `impl` block (5-13) and its method (6-12)
-    // clear the floors — a copy of the file pairs with them across files. Only
-    // the *overlapping* in-file pair was suppressed.
-    write(
-        dir.path(),
-        "copy.rs",
-        &fs::read_to_string(dir.path().join("wrapper.rs")).expect("read"),
-    );
-    let with_copy = run_on(dir.path(), Format::Text);
-    assert!(with_copy.report.contains(&format!("{at}copy.rs:5-13")));
-    assert!(with_copy.report.contains(&format!("{at}copy.rs:6-12")));
 }
 
 #[test]

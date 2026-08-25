@@ -86,6 +86,14 @@ struct Report<'a> {
 }
 
 /// One candidate pair. Field order is the JSON key order (byte-parity).
+///
+/// **Tripwire (N81):** these fields, plus `span`'s text output, are exactly the
+/// set `dedup`'s clause 4 tie-break compares before falling back to incoming
+/// position — see [`crate::dedup`]. "The rendered report is a function of the
+/// candidate set" holds only while that stays true: **any field added here (or
+/// to `render_text`) must join that tie-break**, or two candidates the
+/// tie-break calls indistinguishable will render differently and the surviving
+/// one will depend on incoming order.
 #[derive(Serialize)]
 struct CandidateDto<'a> {
     /// Raw, unrounded similarity (2-dp rounding is text-only).
@@ -241,6 +249,10 @@ mod tests {
 
     #[test]
     fn json_single_candidate_pins_keys_order_and_indent() {
+        // Tripwire (N81): this golden is the full set of rendered fields. If a
+        // key is added here, it must also join `dedup::dominates`' clause 4
+        // tie-break — updating this golden alone silently makes dedup's
+        // survivor, and so the report, depend on incoming candidate order.
         assert_eq!(
             json(&[candidate(0.895)]),
             r#"{

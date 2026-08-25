@@ -32,8 +32,8 @@ lib; dependencies flow **adapters → core**, never the reverse.
   - `discovery` — file walking via the `ignore` crate (**`ignore` confined here**).
   - `report` — text/json rendering via `serde`/`serde_json` (**serialization confined here**).
 - **Composition root (`lib`):** the crate root wires the pipeline together — it is the only place that
-  reads file **contents** from disk (discover → `read_to_string` → parse → detect → render) and exposes
-  the crate's only public façade `run(&RunOptions) -> Result<RunOutput>` (plus `RunOptions`/`RunOutput`/
+  reads file **contents** from disk (discover → `read_to_string` → parse → detect → dedup → render) and
+  exposes the crate's only public façade `run(&RunOptions) -> Result<RunOutput>` (plus `RunOptions`/`RunOutput`/
   `Format` and the `error` types; everything else is `pub(crate)`). It owns the per-file
   skip-with-diagnostic policy. Below it, **core** is IO-free; `discovery` is the only other module that
   touches the filesystem (traversal). It also owns the **oversized-fragment ceiling** (`max_nodes`):
@@ -66,9 +66,24 @@ depends on lib. This keeps the scoring math testable in isolation and the TED en
   containment is a different relation from `dedup`'s *pair-vs-pair* containment and is not reachable by
   it. Legitimate in-file clones have disjoint spans and are unaffected. Surviving pairs get TED; pairs at
   or above `--threshold` are kept; each is assigned canonical left/right and ordered deterministically.
-- **Dedup** (`dedup`): removes redundant nested findings — a nested pair contained on **both** sides by an
-  outer pair is suppressed in favor of the maximal parent; identical spans de-duplicated; one-sided
-  containment keeps both.
+- **Dedup** (`dedup`): removes redundant nested findings — pair `P` dominates pair `Q` when, side-for-side
+  after `detect`'s canonical assignment, `Q.left ⊆ P.left` **and** `Q.right ⊆ P.right` (same path, span
+  containment, **equality allowed on a side**) and `P ≠ Q` (irreflexive via the positional tie-break —
+  no separate guard); `Q` is suppressed in favor of the maximal
+  parent. Equality-on-a-side is what removes the cross-granularity `impl↔method` crosses. Identical-span
+  pairs (reachable when two distinct fragments share a line span) collapse to one, picked by the values
+  the report renders — **highest score**, then the higher `left_nodes`/`right_nodes` — falling back to
+  incoming position only when spans tie, the two scores compare neither `Greater` nor `Less`, and both
+  node counts tie. For every score `similarity` can produce — all of them finite — that middle
+  condition *means* the scores are equal, so the surviving and suppressed pairs render identically
+  (they may still differ in the unemitted `kind`/`line_count`). `NaN` is the one score that would
+  reach the fallback while still rendering differently, and it is excluded on reachability rather
+  than folded in: `similarity` cannot produce one. Containment on one side with **disjoint or partially
+  overlapping** spans on the other keeps both. This *pair-vs-pair* relation is distinct from `detect`'s
+  *intra-pair* overlap filter and never overlaps with it (A3). **Cost, deliberately post-TED (N83):**
+  nesting depth `d` at a clone site costs `d²` TED evaluations to yield one surviving finding, every one
+  of them paid before dedup runs — and the filter cannot move pre-TED, because a dominated pair must
+  survive if its dominator fails the score gate (sizing the envelope is T12's).
 - **Report** (`report`): renders byte-parity output —
   - text: `DUPLICATE score=0.89` + two 2-space-indented `path:start-end` lines (score 2 dp);
   - json: `{ "candidates": [ { "score": <raw f64>, "left": {"file","start_line","end_line"},

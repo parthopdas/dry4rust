@@ -99,7 +99,7 @@ pub struct RunOutput {
     pub diagnostics: Vec<String>,
 }
 
-/// Run the whole pipeline: discover → read + parse → detect → render.
+/// Run the whole pipeline: discover → read + parse → detect → dedup → render.
 ///
 /// Per-file read/parse failures do **not** abort the run (N39, grounded in A8's
 /// pure-reporter rule): the file is skipped, a deterministic one-line
@@ -143,14 +143,14 @@ pub fn run(options: &RunOptions) -> Result<RunOutput> {
         }
     }
 
-    let candidates = detect::detect(
+    let candidates = dedup::dedup(detect::detect(
         &analyzed,
         &detect::DetectOptions {
             threshold: options.threshold,
             min_lines: options.min_lines,
             min_nodes: options.min_nodes,
         },
-    );
+    ));
 
     Ok(RunOutput {
         report: report::render(&candidates, options.format)?,
