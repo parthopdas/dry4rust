@@ -6,9 +6,32 @@
 //!
 //! Properties: identical trees (δ = 0) score exactly `1.0`; the score falls
 //! monotonically as δ grows and reaches `0.0` when δ equals |T₁|+|T₂| (delete
-//! everything, insert everything); it is symmetric in the two node counts.
-//! The value is returned raw — rounding for display is the report adapter's
-//! job (T6).
+//! everything, insert everything); it is symmetric in the two node counts; and
+//! it is capped by the two trees' size ratio (below). The value is returned raw
+//! — rounding for display is the report adapter's job (T6).
+//!
+//! # Property: the size-ratio identity (N93)
+//!
+//! Evaluated at the smallest δ two trees of `min`/`max` nodes can have — pure
+//! insertion of the surplus, `δ = max − min` (an invariant of
+//! [`crate::ted::distance`]) — the formula collapses:
+//!
+//! > `similarity(max − min, min, max) = 1 − (max − min)/max = min/max`
+//!
+//! (the denominator is `min + max + (max − min) = 2·max`). So **`sim ≤
+//! n_small/n_large` is an identity, not an approximation**: a threshold is
+//! *identically* a cap on how far apart two fragments' node counts may be, and
+//! that reading is exact for every pair of counts.
+//!
+//! Its consumer is `detect`'s size-ratio pre-filter, which **cites this
+//! property** rather than re-deriving it — and which evaluates the bound by
+//! calling this function, so the pre-filter's boundary is bit-identical to the
+//! gate's rather than merely algebraically equal. The identity is also what
+//! makes that pre-filter **optimal among count-only filters**, not merely
+//! admissible: the bound is *attained* by real trees (one tree containing the
+//! other's shape edits the surplus in at unit cost), so any filter seeing only
+//! the two node counts that pruned more would prune a pair that can genuinely
+//! reach the threshold.
 //!
 //! # Contract: weak monotone non-increase in δ (N56)
 //!

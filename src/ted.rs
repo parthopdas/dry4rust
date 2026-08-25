@@ -18,9 +18,9 @@ use crate::tree::{Label, NormTree};
 /// A [`NormTree`] flattened into the arrays Zhang–Shasha indexes.
 ///
 /// `labels` and `l` are parallel over the tree's left-to-right post-order:
-/// entry `i` describes the `i`-th node visited. Labels are cloned (they are
-/// small, heap-free values) so a prepared tree is self-contained — T5 keeps
-/// one per fragment and reuses it across every pair.
+/// entry `i` describes the `i`-th node visited. Labels are **copied** (N75:
+/// `Label` is `Copy` — small, heap-free values) so a prepared tree is
+/// self-contained — T5 keeps one per fragment and reuses it across every pair.
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedTree {
     /// Node labels in post-order.
@@ -77,7 +77,7 @@ fn flatten(tree: &NormTree, labels: &mut Vec<Label>, l: &mut Vec<usize>) -> usiz
         leftmost.get_or_insert(child_leftmost);
     }
     let index = labels.len();
-    labels.push(tree.label.clone());
+    labels.push(tree.label);
     let leftmost = leftmost.unwrap_or(index);
     l.push(leftmost);
     leftmost

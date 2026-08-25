@@ -97,6 +97,41 @@ pub struct RunOutput {
     /// One-line diagnostics for stderr, in deterministic discovery order.
     /// They never perturb [`RunOutput::report`].
     pub diagnostics: Vec<String>,
+    /// Counters describing the work this run did. Diagnostic only — nothing
+    /// here is rendered, so [`RunOutput::report`] is unaffected.
+    pub stats: RunStats,
+}
+
+/// How much work a [`run`] did: the size of the pair loop's input, how many
+/// pairs reached TED, and what dedup removed.
+///
+/// **Why this is public (T12).** The performance envelope is a curve in **F**
+/// with `min_nodes` as its input (N96), the per-finding cost multiplier is a
+/// TED-evaluation count (N83), and the pre/post-dedup ratio is a corpus
+/// statistic D5 could not report because nothing exposed the pre-dedup count
+/// (N84c). None of the three is derivable from [`RunOutput::report`], so the
+/// measurement needs exactly these four counters — and nothing more.
+///
+/// They are **counters, not output**: `report` does not render them, so N81's
+/// rule (a new *rendered* field must join `dedup`'s clause-4 tie-break) does
+/// not apply — there is no per-candidate field here to tie-break on, and the
+/// report stays a function of the surviving candidate set alone. Each counter
+/// is a deterministic function of the scanned tree and the options, like the
+/// report itself.
+///
+/// **Pre-1.0 unstable (N41)**, as with [`RunOptions`]/[`RunOutput`].
+#[derive(Debug, Clone, Copy)]
+pub struct RunStats {
+    /// Fragments that cleared `min_lines`/`min_nodes` and entered the O(F²)
+    /// pair loop — the **F** the envelope is a function of.
+    pub fragments: usize,
+    /// Pairs actually scored with TED: the ones the size-ratio pre-filter
+    /// admitted and the overlap filter kept.
+    pub ted_evaluations: usize,
+    /// Candidates `detect` produced, before `dedup`.
+    pub candidates_before_dedup: usize,
+    /// Candidates that survived `dedup` — the number the report renders.
+    pub candidates_after_dedup: usize,
 }
 
 /// Run the whole pipeline: discover → read + parse → detect → dedup → render.
@@ -143,18 +178,27 @@ pub fn run(options: &RunOptions) -> Result<RunOutput> {
         }
     }
 
-    let candidates = dedup::dedup(detect::detect(
+    let detected = detect::detect_counted(
         &analyzed,
         &detect::DetectOptions {
             threshold: options.threshold,
             min_lines: options.min_lines,
             min_nodes: options.min_nodes,
         },
-    ));
+    );
+    let candidates_before_dedup = detected.candidates.len();
+    let candidates = dedup::dedup(detected.candidates);
+    let stats = RunStats {
+        fragments: detected.fragments,
+        ted_evaluations: detected.ted_evaluations,
+        candidates_before_dedup,
+        candidates_after_dedup: candidates.len(),
+    };
 
     Ok(RunOutput {
         report: report::render(&candidates, options.format)?,
         diagnostics,
+        stats,
     })
 }
 

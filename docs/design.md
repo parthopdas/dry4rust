@@ -34,7 +34,7 @@ lib; dependencies flow **adapters → core**, never the reverse.
 - **Composition root (`lib`):** the crate root wires the pipeline together — it is the only place that
   reads file **contents** from disk (discover → `read_to_string` → parse → detect → dedup → render) and
   exposes the crate's only public façade `run(&RunOptions) -> Result<RunOutput>` (plus `RunOptions`/`RunOutput`/
-  `Format` and the `error` types; everything else is `pub(crate)`). It owns the per-file
+  `RunStats`/`Format` and the `error` types; everything else is `pub(crate)`). It owns the per-file
   skip-with-diagnostic policy. Below it, **core** is IO-free; `discovery` is the only other module that
   touches the filesystem (traversal). It also owns the **oversized-fragment ceiling** (`max_nodes`):
   a fragment above it is dropped before `detect` with its own deterministic stderr diagnostic, so a
@@ -58,6 +58,13 @@ depends on lib. This keeps the scoring math testable in isolation and the TED en
   count and line span.
 - **TED + similarity** (`ted`, `similarity`): unit-cost tree-edit distance per pair, normalized to a
   [0,1] score. `left_nodes`/`right_nodes` are the two fragments' normalized-tree node counts.
+  **Size-ratio identity.** Evaluated at the smallest edit distance two trees of a given pair of node
+  counts can have — pure insertion of the surplus — the normalization collapses to
+  `sim = n_small/n_large`. That is an identity, not an approximation: a threshold is *identically* a
+  cap on how far apart two fragments' node counts may be. `detect`'s pre-filter is exactly this
+  bound, which makes it **optimal among count-only filters** rather than merely admissible — the
+  bound is attained by real trees, so pruning any harder on node counts alone would discard pairs
+  that can genuinely reach the threshold.
   **Known limitation — what the score is evidence of.** Identifiers, literals and types are canonicalized
   away, and macro token streams are never parsed (a macro invocation is a single leaf), so a score
   measures the *structure surrounding* the erased content, not the text a reader would point at. Two
@@ -91,9 +98,10 @@ depends on lib. This keeps the scoring math testable in isolation and the TED en
   than folded in: `similarity` cannot produce one. Containment on one side with **disjoint or partially
   overlapping** spans on the other keeps both. This *pair-vs-pair* relation is distinct from `detect`'s
   *intra-pair* overlap filter and never overlaps with it (A3). **Cost, deliberately post-TED (N83):**
-  nesting depth `d` at a clone site costs `d²` TED evaluations to yield one surviving finding, every one
-  of them paid before dedup runs — and the filter cannot move pre-TED, because a dominated pair must
-  survive if its dominator fails the score gate (sizing the envelope is T12's).
+  nesting depth `d` at a clone site costs **up to** `d²` TED evaluations to yield one surviving finding,
+  every one of them paid before dedup runs — an *upper* bound, because the size-ratio pre-filter also
+  prunes cross-level pairs whose node counts are far apart — and the filter cannot move pre-TED, because
+  a dominated pair must survive if its dominator fails the score gate (sizing the envelope is T12's).
 - **Report** (`report`): renders byte-parity output —
   - text: `DUPLICATE score=0.89` + two 2-space-indented `path:start-end` lines (score 2 dp);
   - json: `{ "candidates": [ { "score": <raw f64>, "left": {"file","start_line","end_line"},
@@ -114,7 +122,18 @@ depends on lib. This keeps the scoring math testable in isolation and the TED en
 - **Config:** all behavior via CLI flags; no secrets, no network, no persistence.
 - **Performance:** O(n²) pairs × super-quadratic TED is the main scaling risk; mitigated by the node
   floor, the admissible size-ratio pre-filter, the oversized-fragment ceiling, and confining TED so it
-  stays swappable.
+  stays swappable. The envelope is a curve in the **fragment count F** — the node floor is what *sets*
+  F — over an O(F²) pair loop, with per-pair cost driven by tree **shape** as well as node count; the
+  ceiling bounds the single worst pair. **Shape, not size, dominates the tail.** Tree-edit distance costs
+  `O(n₁·n₂·min(depth₁,leaves₁)·min(depth₂,leaves₂))`, so two pairs at the *same* node counts can differ
+  by more than an order of magnitude — measured at roughly **40×** between a flat fragment and a deeply
+  nested one of equal size, and up to about **95×** in the least favourable reading. The ceiling bounds
+  only the **node** axis, which makes it an imprecise instrument here: it cannot see depth, and depth is
+  not computed. A shape-aware ceiling would be the right instrument and is **not** in v1. The practical
+  consequence for a user: a single pathological fragment — deeply nested, or generated — can cost
+  seconds to minutes on its own, independently of how large the codebase is. `run` reports F, the
+  TED-evaluation count and the pre/post-dedup candidate counts as run statistics; they are counters only
+  and are never rendered into the report.
 - **Observability:** stdout is the report; diagnostics (e.g. skipped unparsable files) go to stderr and
   never perturb stdout bytes.
 

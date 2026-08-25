@@ -26,8 +26,37 @@ pub(crate) struct DetectOptions {
     pub(crate) min_nodes: usize,
 }
 
+/// [`detect`]'s candidates together with the two counters T12 needs to size the
+/// performance envelope: **F**, the fragment count that drives the O(F²) pair
+/// loop, and how many of those pairs actually reached TED.
+///
+/// Counting lives here because this is the only place that knows either number:
+/// the floors decide F (so `min_nodes` is what sets it — N96) and the
+/// size-ratio pre-filter plus the overlap filter decide how many pairs survive
+/// to TED (N83). Both are pure functions of the input set, like the candidates.
+pub(crate) struct Detected {
+    /// The candidates, pre-dedup, sorted by canonical `(left, right)` key.
+    pub(crate) candidates: Vec<Candidate>,
+    /// Fragments that cleared the floors and entered the pair loop — **F**.
+    pub(crate) fragments: usize,
+    /// Pairs that reached [`ted::distance`]; the rest were pruned by the
+    /// size-ratio pre-filter or dropped by the overlap filter.
+    pub(crate) ted_evaluations: usize,
+}
+
 /// Scores every admissible fragment pair and returns the candidates that meet
 /// `opts.threshold`, sorted by canonical `(left, right)` key.
+///
+/// Test-only thin wrapper over [`detect_counted`]; production goes through the
+/// counted form (`lib::run` reports the counters as [`crate::RunStats`]).
+#[cfg(test)]
+pub(crate) fn detect(analyzed: &[Analyzed], opts: &DetectOptions) -> Vec<Candidate> {
+    detect_counted(analyzed, opts).candidates
+}
+
+/// Scores every admissible fragment pair and returns the candidates that meet
+/// `opts.threshold`, sorted by canonical `(left, right)` key, alongside the
+/// [`Detected`] counters.
 ///
 /// Self-pairs are never produced, each unordered pair is scored once, and a
 /// pair whose fragments overlap in source is never scored at all
@@ -39,7 +68,7 @@ pub(crate) struct DetectOptions {
 /// every pair (N53): with counts ascending, once a partner is too large for the
 /// current fragment, every later partner is larger still. Iteration order does
 /// not reach the output — the final canonical `(left, right)` sort does.
-pub(crate) fn detect(analyzed: &[Analyzed], opts: &DetectOptions) -> Vec<Candidate> {
+pub(crate) fn detect_counted(analyzed: &[Analyzed], opts: &DetectOptions) -> Detected {
     let mut kept: Vec<&Analyzed> = analyzed
         .iter()
         .filter(|item| passes_floors(&item.fragment, opts))
@@ -63,6 +92,7 @@ pub(crate) fn detect(analyzed: &[Analyzed], opts: &DetectOptions) -> Vec<Candida
         .collect();
 
     let mut candidates = Vec::new();
+    let mut ted_evaluations = 0usize;
     for (index, (item_a, tree_a)) in kept.iter().zip(&prepared).enumerate() {
         for (item_b, tree_b) in kept.iter().zip(&prepared).skip(index + 1) {
             // Admission mirrors the gate below: `>= opts.threshold`. A rejected
@@ -80,6 +110,7 @@ pub(crate) fn detect(analyzed: &[Analyzed], opts: &DetectOptions) -> Vec<Candida
                 continue;
             }
             let delta = ted::distance(tree_a, tree_b);
+            ted_evaluations += 1;
             let score = similarity(
                 delta,
                 item_a.fragment.node_count,
@@ -101,7 +132,11 @@ pub(crate) fn detect(analyzed: &[Analyzed], opts: &DetectOptions) -> Vec<Candida
         (a.left.canonical_key(), a.right.canonical_key())
             .cmp(&(b.left.canonical_key(), b.right.canonical_key()))
     });
-    candidates
+    Detected {
+        candidates,
+        fragments: kept.len(),
+        ted_evaluations,
+    }
 }
 
 /// The highest score a pair with these node counts could possibly reach — the

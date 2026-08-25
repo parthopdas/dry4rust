@@ -30,6 +30,25 @@ use dry4rust::{Format, RunOptions};
 /// **not** a CLI flag: the dry4go skin has no such option, and a policy nobody
 /// has needed to tune does not warrant one (YAGNI). Kept here so all defaults
 /// stay in the clap layer (N29).
+///
+/// **T12 measured the worst pair this admits (N70/N66), and it is expensive.**
+/// Two fragments at the ceiling cost **~0.7–1.3 s** for one TED when they are
+/// flat (a long run of sibling statements) but **~50–70 s** when they are
+/// deeply nested at the same node count — Zhang–Shasha costs
+/// `O(n₁·n₂·min(depth₁,leaves₁)·min(depth₂,leaves₂))`, so shape, not node
+/// count alone, sets the price. N66 said "if a single admitted maximal pair
+/// costs seconds, 2000 is too generous"; that condition is met.
+///
+/// **The human ruled: the ceiling stays 2000 in v1 (D9).** It is not an open
+/// question. No lower value defends itself — cost is
+/// `n₁·n₂·min(d,l)₁·min(d,l)₂` and in the pathological family depth scales
+/// *with* `n`, so every defensible replacement lands at or below the largest
+/// legitimate fragment we have measured (439 nodes, above), and lowering would
+/// drop large **flat** fragments, which are the cheap ones. The correct
+/// instrument prices **shape**, not node count, and is deferred (D9): depth is
+/// not computed anywhere today. Revisit trigger: T14's `(nodes, depth)`
+/// histogram showing real admitted fragments that are both deep and large, or
+/// a user report of a single pair costing minutes.
 const MAX_NODES: usize = 2000;
 
 /// Parse the process arguments into library run options.

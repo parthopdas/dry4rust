@@ -168,7 +168,12 @@ pub(crate) enum UnOpKind {
 /// and an equivalent free function lower to the same shape — a *method* differs
 /// only through its [`Label::Receiver`] parameter — and the
 /// `model::FragmentKind` distinction is carried separately.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Every payload here is `Copy` (flags, counts and the small `Copy` enums
+/// above), so the label itself is `Copy` (N75): `ted`'s per-fragment flatten is
+/// a memcpy rather than a clone. Adding a heap-carrying payload would take that
+/// away — and would be a normalization change (A6/R3) in the first place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Label {
     // --- Fragment / signature shape ---
     /// A function or method body together with its signature shape. The `fn`
