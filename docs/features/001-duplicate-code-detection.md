@@ -1,6 +1,6 @@
 # Feature: Duplicate Code Detection (TED core, dry4go UX skin)
 **Branch:** vibe/001-duplicate-code-detection
-**Status:** WIP — **S1 DONE**; T11/T8/T8b/T8c/T9/T10 landed, **S2 DONE**. Next: D5 (N78/N84-scoped) → T12 (N59/N70/N83-scoped)
+**Status:** WIP — **S1 DONE**; T11/T8/T8b/T8c/T9/T10 landed, **S2 DONE**. **D5 decided (threshold `0.85`)**, review repairs N87–N98 landed. Next: T12 (N59/N70/N83/N96-scoped) → T14 (third-party corpus) → D5-confirm + T13 (`min_nodes`)
 
 ## Requirements
 
@@ -13,7 +13,7 @@ candidate pairs.
 - **UX is a dry4go "skin" — parity on surface, NOT semantics:**
   - CLI: `dry4rust [options] [paths...]` with flags `--threshold`, `--min-lines`, `--min-nodes`,
     `--format text|json`, and aliases `--json` (=`--format json`), `--text` (=`--format text`).
-  - Defaults are TED-appropriate: `--threshold 0.75` (see A2), `--min-lines 4`, `--min-nodes 20`.
+  - Defaults are TED-appropriate: `--threshold 0.85` (see A2, D5), `--min-lines 4`, `--min-nodes 20`.
   - Output is byte-parity with dry4go:
     - text: `DUPLICATE score=0.89` then two 2-space-indented `path:start-end` lines; score at 2 dp.
     - json: `{ "candidates": [ { "score": <raw f64>, "left": {"file","start_line","end_line"},
@@ -86,14 +86,17 @@ built binary against fixture trees.
 | T9  | S2 | Containment-dedup policy (maximal-parent-wins, both-sides; identical-span dedup; deterministic tie-break). **Carries the N68 A3 restatement + N65.** **Unit:** both-sided suppression; one-sided keep; identical-span dedup. **Plus the N79 negative control:** T9 must leave the dogfood output bit-identical. | Done | fa83753 |
 | T10 | S2 | **Integration:** two files each holding one single-method `impl` → pre-dedup 4 findings, post-dedup 1. **Sole end-to-end evidence for N68 (N79)** — the dogfood cannot witness it. | Done | fa83753 |
 | T11 | S3 | Admissible size-ratio pre-filter (`sim ≤ min(n₁,n₂)/max(n₁,n₂)`): prune pairs below `--threshold` before TED — provably never drops a real match. **Unit:** prune-soundness (a would-be match is never pruned). **Landed as `similarity(max−min,min,max) >= threshold` — see N52 restated.** | Done | bb38a40 |
-| T12 | S3 | Perf guardrail benchmark on a medium fixture; document complexity envelope. **Integration/bench.** | Pending | - |
+| T12 | S3 | Perf guardrail benchmark on a medium fixture; document complexity envelope. **Integration/bench.** **N96 — parameterize, do not hardcode:** the envelope is driven by fragment count **F** against an **O(F²)** base rate, and `min_nodes` is what sets F. A 20→35 floor moves the envelope *quadratically*. Report the curve **as a function of F, with `min_nodes` a stated input** — if T12 pins `min_nodes = 20` and T13 later ships 35, T12's numbers are **void**, the exact failure N77(b) and N84(b) have already inflicted twice. Parameterized, a later floor change **rescales** T12 instead of voiding it. Also carries N59/N70/N75/N83, **N84(c)** (pre/post-dedup ratio — T12 already counts TED evaluations), and in its doc pass **N93** and **N86(a)**. | Pending | - |
+| T13 | S2 | **`min_nodes` floor calibration (D5 spin-off).** The **dominant** false-positive class — two unrelated builder setters, two `impl Display` bodies, two arrange/act/assert tests — sits at score **1.0**. *Dominance is attributed to its evidence:* **7 of 17 findings at `0.85` are exact-`1.00` on our own corpus at `6c3d7e6`** (same standing as the `30–40` estimate below — an estimate, not a third-party measurement). **N101 — the class is not merely unreachable at `1.00`, it is dominant just below it too:** §7b's hand-label puts **8 of the 10 survivors in `[0.85, 1.00)`** in the same shape-coincidence class, so the lever is unchanged but the evidence is wider than the exact-`1.00` population alone. **Unreachability (exact):** the gate is `>=`, so **no** threshold in `[0, 1]` — **including `1.0`** — can exclude a δ=0 pair. D5's move to `0.85` removes none of them. **N94 — three levers, not one:** the class exists because **A6 erases** identifiers, literals and types, so (i) raise `min_nodes`, (ii) raise `min_lines`, (iii) partially de-erase A6. **(iii) is REJECTED on the record:** it changes the meaning of `score` and is a breaking output change under **R3**, and it re-opens the A2/A6 label-model commitment — the very thing R3 freezes. (ii) is weaker than (i) because line count is formatting-sensitive where node count is not. **(i) is the cheapest of three, not the only cure.** Estimate: `min_nodes` should be **30–40**, not 20. **Reframes N72:** closures dying 88% at the floor is not evidence the floor is brutal, it is evidence closures sit below the information threshold where "same shape" means anything. **N95 — this row may close a decision, not just move a number:** at `30–40` the closure population (already **88% annihilated at 20**) goes to ~zero and free `{}` blocks are already **0 extracted**, so EXTENDED's two weakest granularities become dead weight — **D7 stops being a de-scope lever and becomes a cleanup**, and **A1 may need amending**. Sequence T13 knowing it can **close D7 and amend A1**. **N100 — the estimate now has one measurement against it:** on §7b's own ten survivors the `min(left,right)` node counts are `20,39,39,20,20,20,26,24,31,26` (§7c); the eight coincidences span **20–39** and the sole actionable finding sits at **26, inside them**, so a `30–40` floor takes the band from 10% actionable to **0%** and still leaves **3 of the 7 exact-`1.00` findings** alive at `30` and `35` (**1** even at `40`; the gate is `>=`, so the class does not empty until **42**). The cost is qualified: the finding it removes is #7, actionable **as a location pair** but **weakly attributed** (→ R8). §7c's projected survivor sets were confirmed against real `--min-nodes` runs on the pinned corpus, so they are exact for that run. Self-corpus, N=10 — this **contests** `30–40` rather than refuting it (a categorical rejection would overstate the sample), but T13 must move the estimate or explain the sample away. **N101 — observation feeding T13 and T14, deciding nothing now:** the dominant noise carrier in this sample is not fragment *size* but **test/harness code** — 8 of §7b's 10 survivors and most of §7's 11 drops. Test functions are node-rich (§7c: the test pairs sit at 31–39, above the estimated floor), so a 35-node floor plausibly does **not** kill a 10-line arrange/act/assert test and T13's lever may miss the population N88 found. Three options, **none chosen**: (a) nothing — users pass paths; (b) a documented "point it at `src/`, not `tests/`" recipe; (c) a `--exclude` glob or `#[cfg(test)]` skip — **new surface, YAGNI-suspicious in v1**. §7c's column is what tells us whether the floor covers this population at all. Same evidence burden as D5 (N78/N84): needs a third-party corpus → blocks on **T14**. | Pending | - |
+| T14 | S3 | **Acquire and pin a third-party corpus harness.** **One artifact, four consumers:** D5-confirmation, **N78**, **N84(a,d,e)** and **T13** all block on it, and it has been deferred at every gate so far. Deliverable: a named crate + **pinned `(corpus, sha, full flag set)`** per N90, plus §8's **hand-label** and **zero-labelling** protocols written down as runnable recipes (sample size, band, the "would I factor these out?" rubric, the per-KLOC cross-crate histogram at `≥0.75` / `≥0.85` / `=1.00`). **N102 — three protocol edits inside that deliverable, and they change what the labelling can conclude.** (1) **Sample across scores, not at one threshold:** N per bucket in `[0.75,0.85)`, `[0.85,0.95)`, `[0.95,1.00)` and **`=1.00`**, reporting precision **per bucket**. A precision-vs-score curve is the only thing that can *locate* a line; a single number can only be *consistent with* one — and the observed `(0.81, 0.86)` gap is **empty**, so the single-threshold label had no resolution to give. T14 must therefore also emit the **full score histogram** of the un-sampled run, to test whether that gap is a small-N artifact. (2) **The `=1.00` bucket is mandatory and is the actual hole in the record:** T13's central claim rests on **7 findings nobody has ever hand-labelled** — §7 labelled the 11 dropped, §7b the 10 survivors, and the seven exact-`1.00` were never read. (3) **Pre-register the decision rule before labelling,** replacing §8's single `<50%` criterion with a statement about the *contrast between adjacent buckets* and about where precision crosses §4's cost asymmetry. Writing that rule after seeing the curve is **fitting**, and must be called that. (4) **Third label column — `attributed`:** does the tool's evidence match the human's reason (**R8**)? Report precision two ways, *actionable* and *actionable-and-attributed*. On §7b's own data the strict number is **0 of 10**, and that is the honest headline: without this column a detector that finds the right pairs for the wrong reasons is indistinguishable from one that works. (5) **Zero-labelling protocol: keep as written, and do not add the third column** — attribution is undefined when every hit is non-actionable by construction. Add one axis instead: bucket the cross-crate histogram **by node count as well as score**, which prices T13's floor against the coincidence null mechanically, with no human in the loop. Without T14, S3 closes with four "still owed" items and **no mechanism that will ever discharge them**. | Pending | - |
 
 ## Risks (Rx)
 
 - **R1 (perf):** O(n²) pairs × super-quadratic TED (APTED ~O(n³) worst) → slow on large repos. Mitigate:
   `min-nodes` floor, size-ratio pre-filter (S3), size bucketing; keep TED confined so it's swappable.
-- **R2 (calibration):** `0.75` default is provisional; precision/recall unvalidated without dogfood data
-  (D5). Mitigate: `--threshold` is exposed.
+- **R2 (calibration):** `0.85` (D5) is a **reasoned estimate, not a measurement** — precision/recall are
+  still unvalidated on a third-party corpus (N78/N84 stand). Mitigate: `--threshold` is exposed; D5
+  records the cheapest decisive test and the revisit trigger.
 - **R3 (semantic commitment):** the normalization formula fixes the meaning of `score` and
   `left_nodes`/`right_nodes`; changing it later is a breaking output change. Mitigate: document + freeze.
 - **R4 (parse robustness):** exotic Rust (macros, `cfg`, raw idents) may fail/skew `syn` parsing. Decide
@@ -106,6 +109,20 @@ built binary against fixture trees.
 - **R7 (granularity blow-up):** closures + free blocks multiply fragment count → worsens R1 and adds
   containment noise. Mitigated by dedup (T9) and the pre-filter (T11); closures/blocks are the first
   de-scope lever (D7).
+- **R8 (evidence attribution, N99):** the score is not evidence of the duplication a human would cite.
+  A6 erases identifiers, literals and types, **and macro bodies are never parsed** — `parse.rs:431`
+  lowers *every* `Expr::Lit` to a single `Label::Literal`, and `macro_label` (`parse.rs:583`, applied at
+  `parse.rs:369/433/513`) makes each macro invocation **one leaf** carrying only its delimiter and
+  emptiness (`tree.rs:19`, `tree.rs:31-34`). So a 50-line `macro_rules!` body is **one node**, and
+  macro-heavy code is scored almost entirely on its wrapper. **Both directions bite:** two fragments
+  differing only in literal or macro payload score exactly `1.00`, *and* a real duplicate can be
+  reported with a score and `left_nodes`/`right_nodes` describing something else — a true positive
+  found for an **adjacent reason** (§7b #7, whose caveat this risk is the home for). This is a standing
+  property of the label model, not a defect to be tuned away. **Mitigate: document it as a limitation**
+  in `docs/design.md`'s score/report description (number-free, no threshold). T13's `min_nodes`/
+  `min_lines` floors do **not** address it — they change *which* fragments are scored, not *what* the
+  score is evidence of — and the only lever that would, partial de-erasure of A6 (N94 (iii)), is
+  **rejected under R3**.
 
 ## Assumptions (Ax)
 
@@ -120,7 +137,7 @@ built binary against fixture trees.
   remove. The consequence is accepted and bounded: the two constructs are scored at different granularities,
   so a `trait`'s duplicated default bodies are reported method-by-method while a duplicated `impl` is
   reported once at the block (T9's dedup collapses its method-level echoes).
-- **A2:** TED default `--threshold 0.75` with metric normalization
+- **A2:** TED default `--threshold 0.85` (D5; was `0.75`) with metric normalization
   `sim = 1 − 2δ/(|T₁|+|T₂|+δ)`, δ = unit-cost (ins/del/relabel = 1) tree-edit distance.
 - **A3 (restated at T9 per N68):** Containment-dedup operates on **pair-vs-pair** containment only.
   Two distinct containment relations exist and must not be conflated — conflating them is what let the
@@ -180,7 +197,7 @@ built binary against fixture trees.
 - **A6:** Label model = structural `syn` node kind with identifiers/literals canonicalized, so Type-2
   (renamed) clones match; structure is preserved, including `fn` qualifiers, receiver form
   (`self`/`&self`/`&mut self`, taken from the effective self type so `self: &Self` ≡ `&self`; other
-  typed receivers are `Owned`), and the block's terminating semicolon.
+  typed receivers are `Owned`), and the block's terminating semicolon. (consequence: **R8**)
 - **A7:** Output is deterministic/cross-OS-stable: paths normalized to `/`, line counts on normalized line
   endings, candidates sorted by canonical `(left,right)` key before emit.
 - **A8:** Pure reporter — always exit 0 on a successful run; non-zero reserved for usage/internal errors.
@@ -194,7 +211,9 @@ built binary against fixture trees.
 - **D2:** Baseline / allowlist — out of v1.
 - **D3:** Exit-code gate (fail-on-findings) — deferred; v1 is a pure reporter (A8).
 - **D4:** Clustering / union-find groups — deferred; pairs only.
-- **D5:** Threshold calibration + dogfood run — deferred; `0.75` is provisional.
+- **D5:** Threshold calibration — **DECIDED: default `0.75` → `0.85`** (ratified by the human). Recorded
+  in full below (see "D5 decision record"). The corpus measurement N78/N84 require is **still owed**: this
+  is a reasoned estimate, not a measurement.
 - **D6:** 4-crate workspace — deferred (YAGNI); revisit only if core is reused externally.
 - **D7:** Closures + free `{}` blocks — in scope for v1 (S2), but recorded as the first de-scope lever if
   R1/R7 (perf/noise) prove unacceptable post-dogfood.
@@ -326,7 +345,8 @@ allows justified until T7). End-to-end Type-2 `score==1.0` claim now proven.
 - **N28 (T7 — threshold validation):** `DetectOptions` has no bound on `threshold`; a NaN/`2.0` threshold
   yields a silent empty exit-0 report (`score >= NaN` is false). Fix at T7 with a clap `value_parser` range
   `0.0..=1.0` (rejects NaN → usage error → non-zero exit, per A8) — NOT a core clamp.
-- **N29 (T7 — defaults home):** put defaults `0.75/4/20` in the clap layer (single source; `--help` renders
+- **N29 (T7 — defaults home):** put defaults `0.75/4/20` in the clap layer **(now `0.85/4/20` per D5)**
+  (single source; `--help` renders
   them), NOT `impl Default for DetectOptions`. If core must own the numbers, use `pub(crate) const
   DEFAULT_*` referenced by clap `default_value_t` — never both. Pin with a T7 integration test.
 - **N30 (N23 placement — important):** if the human picks the node-ceiling option, it CANNOT live in `detect`
@@ -411,7 +431,10 @@ narrow justified `FragmentKind`/`Fragment::kind` allows remain), N28, N29, N36, 
 dormant (prescribes ceiling placement IF N23 picks one).
 
 **Dogfood signal (D5/R1):** `dry4rust src` (debug) found 3 real pairs incl. two `fragment(...)` test builders
-at 0.87 — 0.75 fired on genuine copy-paste, no obvious false positives. BUT: debug timing (~2 min) is NOT
+at 0.87 — 0.75 fired on genuine copy-paste, no obvious false positives. **[VOID per N77(b) / N91(c) — this
+is the only earlier note that reads as *evidence for* `0.75`, and it is not: the counts predate T8's
+EXTENDED extraction and T8b's overlap filter, and "no obvious false positives" was an unrecorded
+eyeball, not a hand-label. Do not cite it in D5 or T13.]** BUT: debug timing (~2 min) is NOT
 usable for perf decisions (N47 — re-run `--release` first, likely 3–10 s); and the flagged pairs are
 macro-heavy TEST bodies (exactly what N19 predicted — macros lower to leaves).
 
@@ -734,7 +757,7 @@ The three encodings are the right R3 re-commitment. **Label-only was correct for
   (a) **N27: CLOSED AS LATENT, not as a fix.** All 28 `BinOp` and 3 `UnOp` variants were already distinctly mapped at `7738f5e`; the `_ => "?"` arm was unreachable. **T7's "N27 is now BLOCKING before D5 — the fallback inflates scores" was wrong on its premise and its conclusion.** N27 moved no score on any corpus; it converted a future-aliasing risk into compiler exhaustiveness. No past calibration number was ever wrong because of it.
   (b) **N55 is half-false.** "N27 + N14/N15 **change node counts** and scores" — they do not: all three are label-only, no constructor cardinality changed, goldens are 23/23 and score 1.00 unchanged. Only N15 moved output, on exactly two dogfood pairs (δ 5→6, `1−10/51` → `1−12/52`, counts 23/23), neither crossing the threshold nor reordering. Earlier dogfood numbers *are* void — but because of T8's EXTENDED extraction and T8b's overlap filter, **not** the scoring pass.
   (c) **The pre-D5 sequencing conclusion survives, re-based.** It now rests on N15 alone, which demonstrably reaches the pipeline. Nothing else in the D5 reasoning depends on the false premise.
-- **N78 (N72 reading — this bounds what D5 may calibrate on).** Pre-floor 245 → post-floor 109 (Function 84 / Method 13 / ImplBlock 6 / Closure 6 / Block 0), **zero cross-granularity survivors**. Does EXTENDED earn its keep? On this corpus: no evidence for, no evidence against — the extra granularities are 12 of 109 post-floor fragments (11%) and produced **zero findings**; closures are 88% annihilated by the global floor and free `{}` blocks are 0 *extracted*, because idiomatic Rust barely has them. Consequences: (i) **no per-kind floors** — `--min-nodes 20` already does the whole R7 job, and per-kind machinery on a corpus where nothing survives is pure YAGNI; (ii) **A1 unchanged, D7 not pulled** — keeping closures/blocks costs 6 fragments, the de-scope lever is cheap to hold, and the evidence is a single small self-corpus; (iii) **D5 must not calibrate on the dogfood alone** — 109 fragments with an unrepresentative granularity mix (0 Blocks, 6 Closures) cannot support a threshold decision. **D5 needs a second, larger, third-party corpus before `0.75` is confirmed or moved.**
+- **N78 (N72 reading — this bounds what D5 may calibrate on).** Pre-floor 245 → post-floor 109 (Function 84 / Method 13 / ImplBlock 6 / Closure 6 / Block 0), **zero cross-granularity survivors**. Does EXTENDED earn its keep? On this corpus: no evidence for, no evidence against — the extra granularities are 12 of 109 post-floor fragments (11%) and produced **zero findings**; closures are 88% annihilated by the global floor and free `{}` blocks are 0 *extracted*, because idiomatic Rust barely has them. Consequences: (i) **no per-kind floors** — `--min-nodes 20` already does the whole R7 job, and per-kind machinery on a corpus where nothing survives is pure YAGNI; (ii) **A1 unchanged, D7 not pulled** — keeping closures/blocks costs 6 fragments, the de-scope lever is cheap to hold, and the evidence is a single small self-corpus; (iii) **D5 must not calibrate on the dogfood alone** — 109 fragments with an unrepresentative granularity mix (0 Blocks, 6 Closures) cannot support a threshold decision. **D5 needs a second, larger, third-party corpus before `0.75` is confirmed or moved.** — **(iii) STAMPED per N92: consciously overridden by human ratification at D5; evidence still owed.** D5 moved the default to `0.85` **without** that corpus, on ratification, not on measurement. The gate was **waived deliberately, not respected and not forgotten**; the obligation survives the waiver and is carried by **T14**.
 - **N79 (T9/T10 readiness — the burden of proof shifts, but the dogfood is not useless).** With zero cross-granularity survivors the dogfood **cannot witness N68's four-findings scenario**, so **T10's fixture is the sole end-to-end evidence for N68** — build it exactly as N68 prescribed (two files, one single-method `impl` each ⇒ pre-dedup 4, post-dedup 1) and treat it as a first-class acceptance artifact, not a smoke test. `dedup` is pure core, so A3's policy proof belongs in T9 **unit** tests over synthetic `Candidate`s — no corpus needed. But the dogfood upgrades from "useless" to **negative control**: because nothing in `src` is both-sided-contained, **T9 must leave the dogfood output bit-identical.** Assert it. It is the cheapest guard against A3's "equality allowed on a side" (N68 clause 2) over-reaching and suppressing legitimate exact-duplicate pairs — the one way T9 can silently do damage.
 
 **Sequencing — unchanged: T8c (+N73) → T9/T10 (with N68, N74, N79) → D5 (N78-scoped) → T12 (N59/N70-scoped).**
@@ -768,8 +791,453 @@ Verified by hand: transitivity holds across all four mixed cases (strict∘stric
 
 **Calibration readiness: GO, with N84's scope.** T9 closes the last semantic mover; the pipeline is frozen enough to calibrate. Nothing in S2 remains open against D5 except corpus selection.
 
-**Verification: 132 tests** (lib 103 + bins 7 + cli 9 + facade 13), debug and release, zero deleted. N79 negative control bit-identical on the fixed `5e2dc58` corpus (`src --format text` → 906 bytes / 13 findings / 3 exact, sha `E963…3C89`).
+**Verification: 132 tests** (lib 103 + bins 7 + cli 9 + facade 13), debug and release, zero deleted. N79 negative control bit-identical on the fixed `5e2dc58` corpus (`src --threshold 0.75 --format text` → 906 bytes / 13 findings / 3 exact, sha `E963…3C89`). **[Recipe back-annotated per N90: `--threshold 0.75` was implicit at the time and is now written out, so the run stays reproducible after D5 re-based the default to `0.85`.]**
 
 **Landed with T9/T10 and closed:** N68 (A3 restated), N65 (in A1), N79 (negative control taken, bit-identical), N80, N81, N82, N86(b), N86(d).
 
 **Open ledger after T9/T10:** **N78/N84** (scope D5) · N83 (with T12) · N86(a) (with D5) · N75/N70 (T12) · N64/N69/N85/N86(c) (record) · N31/N33/N34/N40 (record/T12) · N46 (record) · N59 (rescopes T12) · N60 (record).
+
+### D5 decision record — default `--threshold` `0.75` → `0.85`
+
+**DECIDED and ratified by the human.** Two independent architecture reviews converged on `0.85`. This
+section is the reasoning of record; A2/R2/Requirements now state `0.85`. Earlier review notes below
+still read `0.75` — they are the dated record of what was true when they were written and are
+deliberately **not** rewritten.
+
+**Confidence, stated honestly: ~65–70% on `0.85` over `0.75`; ~90% on the direction of the move.**
+This is a **reasoned estimate, not a measurement.** N78/N84 are **not** discharged.
+
+#### 1. The δ-budget inversion
+
+From A2's `sim = 1 − 2δ/(|T₁|+|T₂|+δ)`, solving for the largest edit distance a threshold `s` tolerates
+gives **δ_max = N(1−s)/(1+s)** with `N = |T₁|+|T₂|`; for equal-size trees (`N = 2n`),
+**δ_max/n = 2(1−s)/(1+s)**:
+
+| threshold | δ per node | δ at n=20 | δ at n=200 |
+|---|---|---|---|
+| 0.75 | 28.6% | 5.7 | 57 |
+| 0.80 | 22.2% | 4.4 | 44 |
+| **0.85** | **16.2%** | **3.2** | **32** |
+| 0.90 | 10.5% | 2.1 | 21 |
+
+At roughly 5 nodes per typical Rust statement, `0.75` on a 200-node function permits about **11
+statements changed** — and that is *on top of* A6's identifier, literal and type erasure, which are
+already free. That is not a defensible duplicate report.
+
+#### 2. The size-ratio identity — the most legible statement of what the threshold means
+
+The cheapest way to accumulate δ is pure insertion, so `δ ≥ |n₁−n₂|`, giving the exact bound
+**`sim ≤ n_small / n_large`**. A threshold `t` is therefore *identically* a cap on size ratio: two
+fragments may differ in node count by at most `1/t − 1`. **`0.75` admits a 33% size difference;
+`0.85` admits 17.6%.**
+
+**Cross-reference:** this is the same identity as T11's admissible pre-filter, arrived at
+independently. That matters — it means the pre-filter is not merely an optimization, it is a statement
+of the metric's own ceiling.
+
+#### 3. Why the band below 1.0 is where the risk lives
+
+Under A2's normalization a genuine **Type-2** clone has **δ = 0 and scores exactly `1.00`** — renaming,
+re-typing and re-constanting are all free (A6). True-positive mass therefore concentrates at `1.00`
+with a thin Type-3 tail downward. Meanwhile the count of *unrelated* pairs within edit distance δ grows
+combinatorially in δ, against an O(F²) base rate of pairs. Widening `0.85 → 0.75` nearly doubles the
+δ-ball radius (`0.162n → 0.286n`), multiplying coincidence volume far faster than it recovers true
+positives. The band **[0.75, 0.85)** is precisely where the marginal report is most likely
+shape-coincidence and least likely an edited copy.
+
+#### 4. Cost asymmetry — why the default sits above the F1-optimal point
+
+There is no auto-fix, no per-site suppression, no baseline file (D2/D3 are out of v1) and A8 makes the
+tool a pure reporter. A user cannot silence a wrong hit — only lower their opinion of the tool. A
+missed clone costs nothing observable. Precision is the product, so the default belongs strictly
+**above** the F1-optimal point.
+
+**Revisit triggers (record them, do not forget them) — there are two, and the second is the larger:**
+
+1. **Suppression / baseline.** If per-site suppression or a baseline file ever ships (D2/D3), the honest
+   default drops to ~`0.80` and this decision must be revisited.
+2. **Label model (N87d).** R3 freezes the **formula**, not the **label model**. `0.85` is a statement
+   about a δ *distribution*, and that distribution is produced by A6's erasure and A1's granularity set.
+   **Any A6 de-erasure (see T13's rejected lever (iii)) or any A1 granularity change moves the δ
+   distribution and voids `0.85` outright** — a strictly larger trigger than (1), which only shifts it.
+   T13 is the live candidate: if it amends A1 (N95), this number is re-opened, not merely re-tuned.
+
+#### 5. Correction worth recording
+
+The δ-in-denominator is a **low-threshold softener, not a small-δ one**. The budget exceeds a naive
+`1 − δ/n̄` by exactly `2/(1+s)` — **+14% at `0.75`, only +5% at `0.90`**. So `0.75` was looser than it
+looked, and the correction is largest exactly where we were least entitled to it.
+
+#### 6. Dogfood delta — exact commands, pinned `(corpus, sha, flags)` (N84b, extended by N90)
+
+**Corpus:** `dry4rust/src` at **`6c3d7e6`** (the D5 commit's source edits are doc-comment-only and move
+no fragment — verified: the `--threshold 0.75` run below is **byte-identical** to the `6c3d7e6` baseline).
+
+**N90 — the standing rule, strengthened from N84(b): every recorded number is a `(corpus, sha, full
+flag set)` triple, never `(corpus, sha)`.** N84(b) is insufficient because a *default* is not part of a
+recipe: N79's control was recorded as `src --format text` with the threshold **implicit**, so post-D5
+that same command silently re-bases to `0.85` and can never again reproduce 906 bytes / 13 findings.
+The threshold is now written out in N79's line (back-annotated `--threshold 0.75`), and the runs below
+already state every flag. **Write the flags even when they are the defaults of the day.**
+
+```
+cargo build --release
+target/release/dry4rust src --threshold 0.75 --format text   # old default
+target/release/dry4rust src --threshold 0.85 --format text   # new default
+```
+
+| run | findings | bytes | sha256 (first 8) |
+|---|---|---|---|
+| `--threshold 0.75` (old default) | **28** | 1927 | `C7FC158F` |
+| `--threshold 0.85` (new default) | **17** | 1172 | `A3B8ECF7` |
+
+**Delta: −11 findings (−39%).** Every dropped pair lies in the band **[0.75, 0.85)**; nothing at or
+above `0.85` moved, and the seven exact-`1.00` findings are untouched in both runs.
+
+**N89 — reconciling 28 here with N79's 13 at the same threshold.** N79 pins **13 findings / 906 bytes**
+at `5e2dc58`; this section pins **28 findings / 1927 bytes** at `6c3d7e6`, both at `--threshold 0.75` —
+and **T9's containment dedup landed between them**. Read carelessly that says a *suppressing* filter
+more than doubled the output. It did not: **the corpus grew.** `git diff --stat 5e2dc58 6c3d7e6 -- src`
+is **+542/−4 lines across `dedup.rs` (+528), `lib.rs` (+6) and `report.rs` (+12)** — almost entirely
+`dedup.rs`'s own test module, which we wrote two commits earlier. The two numbers are not comparable;
+only a same-sha pair is (this is exactly what N90 now makes a standing rule).
+
+**And it bounds the headline honestly:** **8 of the 11 dropped pairs are those very `dedup.rs` tests.**
+So **−39% is measured on a corpus whose newest file supplies most of the delta** — a file we authored,
+deliberately parallel (N85), two commits before measuring it. The direction of the move does not depend
+on that, but the *magnitude* is a self-corpus artifact and must not be quoted as a general effect size.
+
+**Test/non-test partition (N84d)** — `#[cfg(test)]` boundaries: `dedup.rs:140`, `detect.rs:191`,
+`discovery.rs:134`, `parse.rs:674`, `report.rs:139`.
+
+| | both-test | both-non-test | mixed | total |
+|---|---|---|---|---|
+| at `0.75` | 19 | 5 | 4 | 28 |
+| at `0.85` | 10 | 3 | 4 | 17 |
+| dropped | 9 | 2 | 0 | 11 |
+
+Per N84(e) the threshold was **not** chosen to silence test clones, and no exclude-tests flag was
+added: the move is justified on §1–§4 and drops non-test pairs too.
+
+**N84(c) — pre/post-dedup ratio: NOT reported.** The façade emits only post-dedup candidates and there
+is no flag or diagnostic exposing the pre-dedup count. Obtaining it needs instrumentation, which is out
+of D5's scope; it is carried forward to **T12**, whose envelope work (N83) already has to count TED
+evaluations and therefore has the number in hand.
+
+#### 7. Hand-label of the dropped band — corroborative, **not** the owed measurement
+
+All 11 dropped pairs were read. Applying the "would I factor these out?" test:
+
+- 7 × `dedup.rs` test-body pairs (e.g. `208-215 ↔ 238-247` @ 0.81) — parallel A3-clause pins whose
+  similarity *is* the point (N85). **No.**
+- 1 × `dedup.rs:370-391 ↔ 402-426` @ 0.81 — the N80 permutation tests, same reading. **No.**
+- 1 × `discovery.rs:212-219 ↔ 222-229` @ 0.77 — two unrelated arrange/act/assert tests. **No.**
+- 2 × non-test `parse.rs` visitor methods (`95-102 ↔ 167-183`, `118-125 ↔ 167-183`, both @ 0.77) —
+  "call `push`, then recurse" is the `Visit` trait's shape, not a copied fragment. **No.**
+
+**0 of 11 actionable → 0% precision in the band**, which by §8's own criterion **would satisfy §8's
+criterion if taken on a third-party corpus**. This is **our own corpus**, so per N78 it corroborates and
+cannot decide. Recorded for exactly that weight.
+
+**It also demonstrates T13's argument directly:** `dedup.rs:253-261 ↔ 431-440` scores **1.00** and
+`238-247 ↔ 253-261` scores **0.97** — the *same* non-actionable class as the pairs `0.85` dropped,
+sitting above any survivable threshold. No threshold reaches them — §10/T13 records the **three** levers
+that do, and why two of them are rejected.
+
+#### 7b. Hand-label of the **surviving** band `[0.85, 1.00)` (N88) — the untested half
+
+§3's load-bearing premise is that true-positive mass sits at `1.00` with a thin Type-3 tail. §7 tested
+that premise **below** the new line only. The 10 survivors in `[0.85, 1.00)` had never been read, so
+they were read now, with the same rubric and the same honesty.
+
+**Pinned run — `(corpus, sha, full flag set)` per N90.** Corpus `dry4rust/src` at **`6c3d7e6`** (working
+tree carries only D5's doc-comment and default-literal edits, neither of which moves a fragment:
+comments are not nodes and literals are erased by A6):
+
+```
+cargo build --release
+target/release/dry4rust src --threshold 0.85 --format text
+```
+
+17 findings: 7 at exactly `1.00`, **10 in `[0.85, 1.00)`**. All 10, with "would I factor these out?":
+
+| # | pair | score | partition | reading | actionable |
+|---|---|---|---|---|---|
+| 1 | `dedup.rs:180-183 ↔ detect.rs:47-50` | 0.90 | mixed | two `sort_by` comparator closures on *different* keys (`(left,right)` vs `(node_count,key)`) — the idiomatic tuple-`cmp` shape | **No** |
+| 2 | `dedup.rs:238-247 ↔ 253-261` | 0.97 | both-test | A3 clause-3 pins: one-side-containment + disjointness vs + partial overlap. Parallel by design (N85) | **No** |
+| 3 | `dedup.rs:238-247 ↔ 431-440` | 0.97 | both-test | same class, vs `spans_in_different_files_are_never_contained` | **No** |
+| 4 | `detect.rs:47-50 ↔ 100-103` | 0.90 | both-non-test | the size-order pre-sort vs the canonical-key output sort — same shape, different keys, both load-bearing (N31/N58) | **No** |
+| 5 | `detect.rs:47-50 ↔ 778-781` | 0.90 | mixed | production sort vs `reference_detect`'s. The differential test's whole value is that it is an **independent** reimplementation; factoring it out destroys the test | **No** |
+| 6 | `detect.rs:232-244 ↔ report.rs:144-153` | 0.87 | both-test | two `#[cfg(test)]` `Fragment{…}` builders, same field set. Genuine repetition — but sharing it needs a crate-wide `#[cfg(test)] mod test_support`, for two instances | **Borderline** |
+| 7 | `detect.rs:388-420 ↔ 510-538` | 0.90 | both-test | the **same 20-line `sum_positive`/`add_upbeat` fixture string, copy-pasted**. Hoist to a `const` | **Yes** |
+| 8 | `detect.rs:488-507 ↔ parse.rs:867-899` | 0.86 | both-test | "parse a source, map `kind`s, `assert_eq!` the vec" — unrelated intents, shared arrange/act/assert shape | **No** |
+| 9 | `discovery.rs:232-239 ↔ 251-258` | 0.94 | both-test | `explicit_file_is_included_even_if_gitignored` vs `duplicate_inputs_are_de_duplicated` — unrelated tests, same fixture/discover/assert shape | **No** |
+| 10 | `parse.rs:104-116 ↔ 167-183` | 0.89 | both-non-test | `visit_item_impl` vs `visit_expr_block`: "call `push`, then recurse" is the `Visit` trait's shape (the same reading as §7's two dropped `parse.rs` pairs) | **No** |
+
+**Result: 1 clearly actionable, 1 borderline, 8 not → precision in `[0.85, 1.00)` is 10%, or 20% if
+the borderline counts.** Against 0% in the dropped band `[0.75, 0.85)`.
+
+**Read it honestly — it is neither of the two clean outcomes.**
+
+- It is **not** "0.85 is right". A 10–20% actionable rate is a bad reporter by any standard; the new
+  line does not sit above a population of true positives.
+- It is **not** the clean "~0 actionable above the line either" that would have promoted **T13's thesis
+  — the threshold is the wrong instrument — from estimate to observation**. The surviving band was
+  **observationally somewhat better in this sample** than the dropped one (1/10, or 2/10 counting the
+  borderline, versus 0/11). That is the whole of the evidence: **ten pairs against eleven, on the
+  project's own corpus**. It does **not** establish that the threshold robustly separates, and it says
+  nothing about `0.85` *specifically* — any line drawn through this corpus between the two bands would
+  produce the same two counts. Per §8's criterion, only a `<50%` hand-label on a **third-party** corpus
+  confirms `0.85`, and that measurement is still owed (N78/N84, **T14**). So D5 remains an **estimate
+  ratified on reasoning**; N88 neither confirms nor refutes it.
+- **What it does support, and this is the sharper finding:** the single clear hit (#7) is *copy-pasted
+  test fixture text*, and the borderline one (#6) is a *test builder*. **8 of the 10 survivors involve
+  test/harness code** (only #4 and #10 are non-test on both sides), and **8 of the 10 are clearly
+  non-actionable shape coincidences**, leaving one actionable and one borderline. The instrument is not
+  mainly mis-*calibrated*; it is mainly pointed at a population where "same shape" carries little
+  information — which is T13's argument arriving through a different door (the node/line floors and
+  A6's erasure), not the threshold's.
+- **One caveat against over-reading #7 (→ R8, which is this caveat's permanent home):** the tool scored
+  it on the *enclosing test function's* shape,
+  not on the pasted text. `parse.rs:431` lowers **every** `Expr::Lit` to one generic `Label::Literal`,
+  so the 20 copied lines inside the raw string contribute a **single erased literal node**; the `0.90`
+  comes entirely from the enclosing tests' parse/assert/control structure. The duplication a human would
+  cite is therefore **not** the evidence the tool used. It is a true positive found for an adjacent
+  reason, and so only **weak** evidence that the metric detects what a user would identify.
+
+**Weight: identical to §7 — our own corpus, so corroborative only.** N78/N84 are not discharged, and
+per §8 a `<50%` result on a *third-party* corpus is what would confirm `0.85`. **T14** owns that.
+
+#### 7c. Node-count addendum to §7b (N100) — the free measurement, and it does not go T13's way
+
+`left_nodes`/`right_nodes` were already in the JSON of the **same** run, so §7b's table is re-emitted
+below with a node-count column at zero extra labelling cost. **Pinned run — `(corpus, sha, full flag
+set)` per N90.** Corpus `dry4rust/src` at **`6c3d7e6`** (working tree carries only D5's doc-comment and
+default-literal edits, neither of which moves a fragment):
+
+```
+cargo build --release
+target/release/dry4rust src --threshold 0.85 --format json
+```
+
+`min_nodes` gates each fragment **independently** (`detect.rs:179`, `passes_floors`), so the column that
+decides whether a floor keeps a pair is **`min(left,right)`**.
+
+| # | pair | score | `left_nodes`/`right_nodes` | min | actionable (§7b) |
+|---|---|---|---|---|---|
+| 1 | `dedup.rs:180-183 ↔ detect.rs:47-50` | 0.90 | 20 / 20 | **20** | No |
+| 2 | `dedup.rs:238-247 ↔ 253-261` | 0.97 | 40 / 39 | **39** | No |
+| 3 | `dedup.rs:238-247 ↔ 431-440` | 0.97 | 40 / 39 | **39** | No |
+| 4 | `detect.rs:47-50 ↔ 100-103` | 0.90 | 20 / 20 | **20** | No |
+| 5 | `detect.rs:47-50 ↔ 778-781` | 0.90 | 20 / 20 | **20** | No |
+| 6 | `detect.rs:232-244 ↔ report.rs:144-153` | 0.87 | 23 / 20 | **20** | Borderline |
+| 7 | `detect.rs:388-420 ↔ 510-538` | 0.90 | 29 / 26 | **26** | **Yes** |
+| 8 | `detect.rs:488-507 ↔ parse.rs:867-899` | 0.86 | 28 / 24 | **24** | No |
+| 9 | `discovery.rs:232-239 ↔ 251-258` | 0.94 | 31 / 33 | **31** | No |
+| 10 | `parse.rs:104-116 ↔ 167-183` | 0.89 | 26 / 27 | **26** | No |
+
+**The result is the second branch N100 named, not the first — report it as found.** The eight shape
+coincidences do **not** sit in a low `20–35` band with the true positive above them. They span
+**20–39**, and the sole actionable finding (#7) sits at **26 — inside the mass, below its median**,
+fifth-smallest of the ten. Projected against the estimate:
+
+| floor | survivors (of the 10) | actionable among them |
+|---|---|---|
+| `20` (today) | all 10 | 1 (+1 borderline) |
+| `30` | #2 (39), #3 (39), #9 (31) | **0** |
+| `35` | #2 (39), #3 (39) | **0** |
+| `40` | none | — |
+
+**A `30–40` floor removes the band's only actionable finding first and takes precision from 10% to
+0%.** On this sample it separates nothing: it is a size cut that correlates with neither population.
+That **contests** the `30–40` estimate — it does not establish that a floor in that range is generally
+wrong, and a categorical rejection would overstate ten pairs on one self-corpus. The cost is also
+qualified: #7 is actionable **as a location pair** but **weakly attributed** — the copied text is a
+single erased literal node and the `0.90` comes from the enclosing test structure (§7b's caveat, → R8).
+So the floor's price here is **one weakly-attributed true positive**, not a strong one.
+
+**And it does not clear the class T13 aims at either.** The seven exact-`1.00` findings from the same
+run, by min node count: **20, 20, 20, 28, 38, 39, 41**. At `30` and at `35`, **3 of 7 survive**; at
+`40`, **1 still does**. The floor is `>=` (`node_count >= min_nodes`, `detect.rs:179`), so the `41/41`
+pair survives at `41` and the class does not empty until **`42`**. The floor is weakest exactly where
+T13 says the dominant false-positive mass lives.
+
+**One caveat, and one former caveat now discharged by measurement.** (a) **DISCHARGED — the projection
+was checked against real runs, and the survivor sets are exact for this pinned run, not approximate.**
+The projection filters the *emitted* rows, so a pair currently suppressed by dedup could in principle
+resurface once its dominator is floored out. It does not, here. Same pinned corpus and sha, same
+`(corpus, sha, full flag set)` discipline per N90:
+
+```
+target/release/dry4rust src --threshold 0.85 --min-nodes 30 --format json   # 6 findings
+target/release/dry4rust src --threshold 0.85 --min-nodes 35 --format json   # 5 findings
+target/release/dry4rust src --threshold 0.85 --min-nodes 40 --format json   # 1 finding
+target/release/dry4rust src --threshold 0.85 --min-nodes 41 --format json   # 1 finding
+target/release/dry4rust src --threshold 0.85 --min-nodes 42 --format json   # 0 findings
+```
+
+At `30`: #2, #3, #9 **plus** the three surviving exact-`1.00` pairs. At `35`: #2, #3 plus the same
+three. At `40`: the exact-`1.00` `41/41` pair alone (`parse.rs:904-937 ↔ 1066-1089`), which survives
+`41` as well and dies only at `42`. **No suppressed pair resurfaced at any floor.** (These are flag
+overrides for measurement only; the shipped `--min-nodes` default is unchanged at **20**.) (b) **Same
+self-corpus weight as the rest of §7b — an addendum, not a promotion:** ten pairs on the project's own,
+test-heavy corpus. It cannot settle `30–40`. What it does do is remove `30–40`'s status as
+*unopposed*: the one cheap check available now points the other way, so **T13 must either move the
+estimate or explain this sample away**, and T14's data is what will decide. Not equivocal, but small.
+
+#### 8. What is still owed (N78/N84 stand) — the cheapest decisive test
+
+Recorded so it is not lost:
+
+- **Hand-label.** Sample **20** reported pairs from the band **[0.75, 0.85)** on **one real medium
+  third-party crate** and hand-label "would I factor these out?". **<50% precision confirms `0.85`;
+  >75% would refute it.** **The 50–75% interval is not undefined (N87b): it lands on `0.80`** — which
+  is also §4's suppression-trigger value, i.e. the same number arrives from two independent directions.
+  Read `50–75%` as "the band carries real signal but not enough to pay for itself at `0.75`".
+- **Zero-labelling complement.** Run across **two unrelated crates** and count cross-crate hits per
+  KLOC at **≥0.75**, **≥0.85** and **=1.00**. Every cross-crate hit is non-actionable by construction,
+  so that histogram reads the coincidence null directly, with no human judgement in the loop.
+
+Both remain **open**; D5 is decided, not measured.
+
+**N102 — this section's protocol is superseded by T14's, which is stricter.** The single-threshold
+sample and the lone `<50%` criterion above are retained as history; T14 ships the replacement — a
+per-bucket sample (`[0.75,0.85)`, `[0.85,0.95)`, `[0.95,1.00)`, `=1.00`), a **pre-registered** decision
+rule stated before any labelling, and a third `attributed` label column (R8). Read T14's row, not this
+list, when the labelling is actually run.
+
+#### 9. Field comparison, one line
+
+Mature clone detectors (CPD, Simian, jscpd, CCFinder, `dupl`) mostly default to *exact-after-
+normalization plus a generous size floor* — they spend their precision budget on the **floor**, not on
+a fuzzy band. **Do not cite dry4go's default as evidence:** if it follows `dupl`'s lineage its
+"threshold" is a token **size**, not a similarity ratio, and is not commensurable with ours. A UX model
+is not a metric model (this is D1/O1 restated).
+
+**Where `0.75` actually came from (N87c) — it was never derived.** No note, review or measurement in
+this file establishes `0.75`; it entered with the dry4go UX skin at D1/O1 and was carried forward as a
+plausible-looking number. The paragraph above shows it is not even commensurable with its source: if
+dry4go inherits `dupl`'s lineage, its "threshold" is a token **size**, not a similarity ratio. So the
+honest framing of this whole decision is: **we are moving off a placeholder, not off a reasoned value.**
+That cuts both ways and both must be recorded — it lowers the bar `0.85` had to clear (there was no
+prior evidence to overturn), and it means the −39% delta in §6 measures a change *from an arbitrary
+baseline*, so it quantifies nothing about `0.85`'s own correctness.
+
+#### 10. `min_nodes` — recorded, deliberately NOT acted on (→ **T13**)
+
+The human's call: `min_nodes` is deferred to its own task. The argument to preserve:
+
+The **dominant** false-positive class — two unrelated builder setters, two `impl Display` bodies, two
+arrange/act/assert tests — sits at score **`1.00`**, where **no threshold can reach it**. *Dominance is
+attributed to its evidence, at the same standing as the `30–40` estimate:* **7 of the 17 findings at
+`0.85` are exact-`1.00`, on our own corpus at `6c3d7e6`** — an estimate, not a third-party measurement.
+The unreachability itself is **exact**, not an estimate: the gate is `>=`, so no threshold in `[0, 1]`,
+**including `1.0`**, excludes a δ=0 pair. Moving `0.75 → 0.85` removes **none** of those (§7 shows two
+live examples in our own output; §7b adds that 8 of the 10 *survivors* are the same shape-coincidence
+class one band lower).
+
+**N94 — the class exists because A6 erases, so there are three levers, not one.** Identifiers, literals
+and types are free under A6; that is what makes two unrelated setters δ=0. Therefore:
+
+- **(i) raise `min_nodes`** — cheapest, purely a parameter, no output-semantics change. **Chosen.**
+- **(ii) raise `min_lines`** — available, but weaker: line count is formatting-sensitive where node
+  count is not, so it buys the same suppression less predictably.
+- **(iii) partially de-erase A6** — the only lever that attacks the *cause*. **REJECTED on the record:**
+  it changes the meaning of `score`, which is a breaking output change under **R3**, and it re-opens the
+  A2/A6 label-model commitment that R3 exists to freeze (see §4's second revisit trigger — a de-erasure
+  voids `0.85` outright rather than shifting it).
+
+So the honest statement is **"the floor is the cheapest of three levers, and here is why we won't touch
+the other two"** — *not* "the only cure is the node floor", and *not* "tune a number". The estimate is
+that `min_nodes` should be **30–40** rather than `20`.
+
+**N72 reframed:** closures dying 88% at the floor is *not* evidence the floor is brutal. It is evidence
+that closures sit **below the information threshold**, where "same shape" means anything. Read that way
+it argues for raising the floor, not lowering it.
+
+**N95 — the consequence nobody had drawn: T13 may close a decision, not just move a number.** At
+`min_nodes` 30–40 the closure population — already **88% annihilated at 20** — goes to ~zero, and free
+`{}` blocks are already **0 extracted** (N78). EXTENDED's two weakest granularities then carry cost and
+produce nothing, so **D7 stops being a de-scope lever and becomes a cleanup**, and **A1 may need
+amending** to drop them. Sequence T13 accordingly: it is a task that can **close D7 and amend A1**.
+
+Tracked as **T13 (Pending)**; `min_nodes` is unchanged at `20`.
+
+**Ledger:** N78/N84(a,b,d,e) **stand — still owed**; N84(c) → T12; N86(a) remains open (unrelated to
+the threshold). New: **T13**, **T14**.
+
+#### 11. Review repairs landed on this record (N87–N98)
+
+Anders' D5 review was **APPROVE-WITH-NOTES**; the notes were applied here, not deferred.
+
+- **N87** — four one-line repairs: (a) §7 no longer says the self-corpus hand-label *confirms* `0.85`;
+  (b) §8's `50–75%` interval now resolves, to `0.80`; (c) §9 states `0.75`'s provenance — it was never
+  derived; (d) §4 records the **second** revisit trigger (the label model).
+- **N88** — the 10 survivors in `[0.85, 1.00)` were hand-labelled; §7b, with the result reported as
+  found (1 clear + 1 borderline of 10) rather than as either clean narrative.
+- **N89** — §6 reconciles N79's 13-at-`5e2dc58` with §6's 28-at-`6c3d7e6` (corpus growth, not a dedup
+  regression) and bounds the −39% headline.
+- **N90** — the pin is now `(corpus, sha, **full flag set**)`, standing rule; N79's recipe
+  back-annotated with `--threshold 0.75`.
+- **N91** — three stale but *live* notes corrected in place, not rewritten: N29 (`0.85/4/20`),
+  `tests/facade.rs`'s `impl`↔method comment (now states the bound `1 − 1/(n+1) ≥ 0.95238` at `n ≥ 20`,
+  so it cannot go stale again), and T7's dogfood line (stamped VOID inline).
+- **N92** — N78(iii) stamped **consciously overridden by ratification, evidence still owed**.
+- **N94/N95** — T13's framing corrected (three levers, (iii) rejected on the record; dominance
+  attributed to its evidence) and its D7/A1 consequence recorded.
+- **N96** — T12 must report its curve as a function of **F** with `min_nodes` a stated input.
+- **N97** — **T14** added: one corpus artifact, four blocked consumers.
+- **N98** — façade gap **accepted and relabelled**, not closed. The façade must **not** track the
+  product default: that recreates the second source N29 forbids and couples lib tests to `clap`. The
+  stronger framing: **no test anywhere is sensitive to the default's *value*** — the default-path runs
+  all score `1.00` and pass at any threshold in `[0, 1)` — and that is **correct by design**, because
+  the default is a **calibration constant, not a behavior**. Binding it to fixture behavior would turn
+  every recalibration into a golden-churn event. Zero goldens moved at D5 for that reason; it was the
+  right outcome, not a hole. Landed as the only code touch: `tests/facade.rs`'s literal is hoisted to
+  `HARNESS_THRESHOLD`, documented as deliberately *not* the shipped default and chosen low so fixtures
+  exercise the **gate**, not the **calibration**.
+- **N93 — deliberately NOT done here.** The size-ratio identity (§2) stays in this record; promoting it
+  into `similarity.rs` / `design.md` is **deferred to T12's doc pass**. `design.md` stays number-free.
+- **N99 — the evidence-attribution property is a *risk*, not a note: R8 added.** A6's erasure plus
+  unparsed macro bodies (`tree.rs:19`, `tree.rs:31-34`; `parse.rs:431` — one `Label::Literal` per literal;
+  `macro_label`, `parse.rs:583` — one leaf per macro invocation, body unparsed; all four cited lines
+  verified against the source) mean the score can describe something other than the duplication a human
+  would cite. It has a user-visible consequence in **both** directions and a mitigation, which is what
+  makes it a standing risk. **A6 keeps its wording** with `(consequence: R8)` appended. §7b's
+  adjacent-reason caveat is cross-referenced to R8 and **left in place**. R8's mitigation is the **only**
+  `docs/design.md` touch in D5: a number-free, threshold-free limitation in the score/report description,
+  stating that T13's floors do not address this and that N94 (iii) is rejected under R3.
+- **N100 — §7b's table re-emitted with a node-count column (§7c), from the JSON of the same pinned run.**
+  Zero new labelling; `(corpus, sha, full flag set)` pinned per N90. **It came out the way T13 would not
+  want and is reported as found:** the eight shape coincidences span **20–39** min-nodes rather than
+  clustering low, and the sole actionable finding sits at **26**, *inside* them — so a `30–40` floor
+  removes the true positive first (10% → **0%** actionable) and still leaves **3 of the 7** exact-`1.00`
+  findings at `30`/`35` (**1** at `40`; the gate is `>=`, so the class empties only at **42**). The
+  removed finding is #7 — actionable as a *location pair*, **weakly attributed** (→ R8). The projected
+  survivor sets were then confirmed against real `--min-nodes` runs on the same pinned corpus (no
+  dedup-suppressed pair resurfaced), so they are **exact for that run**. Self-corpus, N=10: an addendum,
+  not a promotion — it **contests** the `30–40` estimate rather than refuting it, but `30–40` is no
+  longer unopposed.
+- **N101 — T13's rationale broadened, plus one observation that decides nothing.** The false-positive
+  class is unreachable at `1.00` **and dominant just below it** (8 of 10 survivors, §7b) — same lever,
+  wider evidence, unchanged standing. Observation feeding T13 **and** T14: the dominant noise carrier
+  here is **test/harness code**, not fragment size, and test functions are node-rich (§7c puts them at
+  31–39), so T13's floor plausibly misses the very population N88 found. Options (a) nothing /
+  (b) a documented "point it at `src/`" recipe / (c) `--exclude` or a `#[cfg(test)]` skip — recorded,
+  **none chosen**; (c) is flagged new surface and YAGNI-suspicious in v1.
+- **N102 — T14's labelling protocol tightened, inside its existing deliverable.** Sample **per score
+  bucket** (`[0.75,0.85)`, `[0.85,0.95)`, `[0.95,1.00)`, `=1.00`) and report precision per bucket — only
+  a curve can *locate* a line, and the empty observed `(0.81, 0.86)` gap left the single-threshold label
+  with no resolution; T14 also emits the full score histogram to test whether that gap is a small-N
+  artifact. The **`=1.00` bucket is mandatory** and is the record's actual hole: T13's central claim
+  rests on **7 findings nobody has ever hand-labelled**. The decision rule is **pre-registered before
+  labelling**, replacing §8's `<50%` criterion with adjacent-bucket contrast against §4's cost
+  asymmetry — writing it afterwards is **fitting** and is named as such. A third label column,
+  **`attributed`** (R8), yields precision two ways; on §7b's data the strict figure is **0 of 10**, and
+  that is the honest headline. The zero-labelling protocol is **kept unchanged** — attribution is
+  undefined there — gaining only a **node-count axis** on the cross-crate histogram, which prices T13's
+  floor against the coincidence null mechanically. §8 now points here.
+
+**Sequencing (Anders, recorded):** **D5 (with these repairs) → T12 (N59/N70/N75/N83, N84(c),
+parameterized per N96, plus N93 and N86(a) in its doc pass) → T14 → D5-confirm + T13 together →
+S3 close.** T14 sits before the two evidence-bearing items because it is what makes them dischargeable.
