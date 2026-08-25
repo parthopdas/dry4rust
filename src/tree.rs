@@ -20,7 +20,10 @@
 //! wherever they appear ([`Label::Param`], [`Label::ReturnType`] as
 //! presence-only, `as T` casts, [`Label::PatType`]) — this is what lets renamed
 //! Type-2 clones lower to *equal* trees — while operators, arity, statement
-//! order, control flow, mutability, block flavor, range shape and pattern shape
+//! order, control flow, mutability, block flavor, range shape, pattern shape,
+//! `fn` qualifiers, receiver form (`self` / `&self` / `&mut self`, taken from
+//! the effective self type so `self: &Self` ≡ `&self`; other typed receivers
+//! are `Owned`) and the meaning-bearing statement semicolon
 //! are all preserved and keep genuinely different code apart.
 //!
 //! # Known limitation — macros
@@ -52,6 +55,26 @@ pub(crate) enum RangeKind {
     Closed,
 }
 
+/// The receiver form of a method — `self` / `&self` / `&mut self` (N14).
+///
+/// A method with no receiver (an associated function) simply has no
+/// [`Label::Receiver`] child, so "no receiver" needs no variant of its own.
+/// The form is taken from the receiver's **effective self type** (N73), so
+/// `self: &Self` ≡ `&self` and `self: &mut Self` ≡ `&mut self`. `mut self`
+/// maps to [`ReceiverForm::Owned`]: like a `mut x` parameter it is a
+/// local binding mode, invisible to callers, and parameter binding modes are
+/// already erased.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReceiverForm {
+    /// `self` (and `mut self`, and a typed receiver over a non-reference type
+    /// such as `self: Box<Self>` — the type is erased like every other type).
+    Owned,
+    /// `&self` (and `self: &Self`).
+    Ref,
+    /// `&mut self` (and `self: &mut Self`).
+    RefMut,
+}
+
 /// The flavor of a `{ .. }` block. Flavors change evaluation semantics, so they
 /// are preserved rather than collapsed to a bare block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,19 +104,83 @@ pub(crate) enum Delimiter {
     Bracket,
 }
 
+/// A binary operator, one variant per operator the language spells differently
+/// (N27).
+///
+/// Operators are *not* Type-2 renames: `a + b` and `a - b` mean different
+/// things, so each keeps its own label. [`BinOpKind::Other`] is the residual
+/// for an operator a future `syn` may add (`syn::BinOp` is `#[non_exhaustive]`);
+/// every operator `syn` 2.0 defines today maps to a variant of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BinOpKind {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    And,
+    Or,
+    BitXor,
+    BitAnd,
+    BitOr,
+    Shl,
+    Shr,
+    Eq,
+    Lt,
+    Le,
+    Ne,
+    Ge,
+    Gt,
+    AddAssign,
+    SubAssign,
+    MulAssign,
+    DivAssign,
+    RemAssign,
+    BitXorAssign,
+    BitAndAssign,
+    BitOrAssign,
+    ShlAssign,
+    ShrAssign,
+    /// An operator unknown to this version — see the type-level note.
+    Other,
+}
+
+/// A unary operator. As with [`BinOpKind`], [`UnOpKind::Other`] is the residual
+/// for a future `syn` variant; `*`, `!` and `-` all have labels of their own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnOpKind {
+    /// `*expr`.
+    Deref,
+    /// `!expr`.
+    Not,
+    /// `-expr`.
+    Neg,
+    /// An operator unknown to this version — see the type-level note.
+    Other,
+}
+
 /// A structural node kind — the preserved Rust syntactic categories.
 ///
 /// Identifiers and literals are canonicalized to [`Label::Path`] /
 /// [`Label::Literal`] and types are erased; structure (arity, statement order, control flow,
 /// operators, mutability, block flavor, pattern shape) is preserved. Free
-/// functions and methods share [`Label::Function`] so an inherent method and an
-/// equivalent free function lower to the same shape — the `model::FragmentKind`
-/// distinction is carried separately.
+/// functions and methods share [`Label::Function`], so an associated function
+/// and an equivalent free function lower to the same shape — a *method* differs
+/// only through its [`Label::Receiver`] parameter — and the
+/// `model::FragmentKind` distinction is carried separately.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Label {
     // --- Fragment / signature shape ---
-    /// A function or method body together with its signature shape.
-    Function,
+    /// A function or method body together with its signature shape. The `fn`
+    /// qualifiers are preserved (N14): they change what the item *is* to its
+    /// callers (an `async fn` returns a future, a `const fn` is callable in
+    /// const context, an `unsafe fn` shifts the proof obligation), so two
+    /// functions differing only in a qualifier are not clones of each other.
+    Function {
+        is_async: bool,
+        is_const: bool,
+        is_unsafe: bool,
+    },
     /// An `impl` block body; children are its methods' [`Label::Function`]
     /// nodes in source order (associated consts and types carry only erased
     /// names/types and so contribute no shape).
@@ -102,13 +189,32 @@ pub(crate) enum Label {
     Params,
     /// A single parameter (identifier and type normalized away — arity only).
     Param,
+    /// The `self` parameter of a method, carrying its form (N14). It occupies
+    /// the receiver's slot in [`Label::Params`], so a method and a free
+    /// function of the same arity no longer lower alike.
+    Receiver(ReceiverForm),
     /// Present iff the signature declares an explicit return type.
     ReturnType,
 
     // --- Blocks & statements ---
     /// A block; the flavor (plain / `async` / `unsafe` / `try` / `const`) is
     /// preserved. Children are its statements in source order.
-    Block(BlockKind),
+    ///
+    /// `tail` records whether the block ends in a **tail expression** — a final
+    /// statement written without its terminating semicolon (N15). That is the
+    /// semicolon that carries meaning: `{ x }` evaluates to `x` while `{ x; }`
+    /// evaluates to `()`. A semicolon earlier in the block is not a
+    /// distinction — a non-final statement expression is unit-typed either way
+    /// (and, unless it is block-like, cannot be written without one at all).
+    ///
+    /// # Known limitation — `tail` is syntactic
+    ///
+    /// `tail` records how the block was *written*, not what it evaluates to:
+    /// `fn f() { if a { b(); } }` and `fn f() { if a { b(); }; }` are
+    /// semantically identical yet lower differently. Deciding value-ness needs
+    /// type inference, which `parse` does not — and must not — have; this is
+    /// the unavoidable mirror of the distinction `tail` exists to keep (N15).
+    Block { kind: BlockKind, tail: bool },
     /// A `let` binding; children are the bound pattern then its initializer /
     /// `else` diverge exprs.
     Let,
@@ -150,10 +256,10 @@ pub(crate) enum Label {
     Index,
     /// An assignment `lhs = rhs` (compound assigns keep their operator).
     Assign,
-    /// A binary operation; the canonical operator token is preserved.
-    Binary(&'static str),
-    /// A unary operation; the canonical operator token is preserved.
-    Unary(&'static str),
+    /// A binary operation; the operator is preserved.
+    Binary(BinOpKind),
+    /// A unary operation; the operator is preserved.
+    Unary(UnOpKind),
     /// A reference `&expr` / `&mut expr`.
     Reference(Mutability),
     /// A raw-address `&raw const expr` / `&raw mut expr`.
@@ -290,9 +396,16 @@ mod tests {
         //    ├─ Let
         //    └─ Return
         let tree = NormTree::new(
-            Label::Function,
+            Label::Function {
+                is_async: false,
+                is_const: false,
+                is_unsafe: false,
+            },
             vec![NormTree::new(
-                Label::Block(BlockKind::Plain),
+                Label::Block {
+                    kind: BlockKind::Plain,
+                    tail: false,
+                },
                 vec![NormTree::leaf(Label::Let), NormTree::leaf(Label::Return)],
             )],
         );

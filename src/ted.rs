@@ -222,12 +222,24 @@ mod tests {
     use super::*;
     use crate::tree::BlockKind;
 
+    /// Plain-`fn` and plain-block labels: these trees are distance fixtures, so
+    /// the qualifier and tail flags are irrelevant and spelled once.
+    const FUNCTION: Label = Label::Function {
+        is_async: false,
+        is_const: false,
+        is_unsafe: false,
+    };
+    const BLOCK: Label = Label::Block {
+        kind: BlockKind::Plain,
+        tail: false,
+    };
+
     /// `Function( Block( Let, Return ) )` — 4 nodes.
     fn sample() -> NormTree {
         NormTree::new(
-            Label::Function,
+            FUNCTION,
             vec![NormTree::new(
-                Label::Block(BlockKind::Plain),
+                BLOCK,
                 vec![NormTree::leaf(Label::Let), NormTree::leaf(Label::Return)],
             )],
         )
@@ -250,12 +262,7 @@ mod tests {
         let prepared = PreparedTree::new(&sample());
         assert_eq!(
             prepared.labels,
-            vec![
-                Label::Let,
-                Label::Return,
-                Label::Block(BlockKind::Plain),
-                Label::Function,
-            ]
+            vec![Label::Let, Label::Return, BLOCK, FUNCTION,]
         );
         assert_eq!(prepared.l, vec![0, 1, 0, 0]);
         // Keyroots: the root (3) and `Return` (1), which is not a leftmost child.
@@ -280,12 +287,9 @@ mod tests {
     #[test]
     fn one_leaf_insertion_costs_one() {
         // Block(Let) → Block(Let, Return): insert one leaf.
-        let smaller = NormTree::new(
-            Label::Block(BlockKind::Plain),
-            vec![NormTree::leaf(Label::Let)],
-        );
+        let smaller = NormTree::new(BLOCK, vec![NormTree::leaf(Label::Let)]);
         let larger = NormTree::new(
-            Label::Block(BlockKind::Plain),
+            BLOCK,
             vec![NormTree::leaf(Label::Let), NormTree::leaf(Label::Return)],
         );
         assert_eq!(distance_trees(&smaller, &larger), 1);
@@ -298,9 +302,9 @@ mod tests {
         // Function(Block(Path, Return, Literal))  — 5 nodes
         // One relabel (Let → Path) + one insertion (Literal) = 2.
         let other = NormTree::new(
-            Label::Function,
+            FUNCTION,
             vec![NormTree::new(
-                Label::Block(BlockKind::Plain),
+                BLOCK,
                 vec![
                     NormTree::leaf(Label::Path),
                     NormTree::leaf(Label::Return),
@@ -316,7 +320,7 @@ mod tests {
         // Function(Params(Param, Param)) — 4 nodes — vs the single leaf Literal:
         // relabel the root (1) + delete the other three (3) = 4.
         let deep = NormTree::new(
-            Label::Function,
+            FUNCTION,
             vec![NormTree::new(
                 Label::Params,
                 vec![NormTree::leaf(Label::Param), NormTree::leaf(Label::Param)],

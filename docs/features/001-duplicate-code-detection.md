@@ -121,7 +121,9 @@ built binary against fixture trees.
 - **A5:** Layout = 1 lib + 1 bin. Adapters (`syn`/`ignore`/`clap`/`serde`) confined to their modules;
   core (`tree`/`ted`/`similarity`/`dedup`/`detect`) is pure std-only.
 - **A6:** Label model = structural `syn` node kind with identifiers/literals canonicalized, so Type-2
-  (renamed) clones match; structure is preserved.
+  (renamed) clones match; structure is preserved, including `fn` qualifiers, receiver form
+  (`self`/`&self`/`&mut self`, taken from the effective self type so `self: &Self` ≡ `&self`; other
+  typed receivers are `Owned`), and the block's terminating semicolon.
 - **A7:** Output is deterministic/cross-OS-stable: paths normalized to `/`, line counts on normalized line
   endings, candidates sorted by canonical `(left,right)` key before emit.
 - **A8:** Pure reporter — always exit 0 on a successful run; non-zero reserved for usage/internal errors.

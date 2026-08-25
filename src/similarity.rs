@@ -42,6 +42,18 @@ mod tests {
     use crate::ted::{self, PreparedTree};
     use crate::tree::{BlockKind, Label, NormTree};
 
+    /// Plain-`fn` and plain-block labels; the qualifier and tail flags do not
+    /// matter to these fixtures.
+    const FUNCTION: Label = Label::Function {
+        is_async: false,
+        is_const: false,
+        is_unsafe: false,
+    };
+    const BLOCK: Label = Label::Block {
+        kind: BlockKind::Plain,
+        tail: false,
+    };
+
     /// Local compose of TED + the formula — detect (T5) owns this composition
     /// in production; `similarity.rs` exposes only the frozen formula (N21).
     fn similarity_prepared(a: &PreparedTree, b: &PreparedTree) -> f64 {
@@ -110,9 +122,9 @@ mod tests {
     fn scores_prepared_trees_end_to_end() {
         // Function(Block(Let, Return)) — 4 nodes.
         let tree = NormTree::new(
-            Label::Function,
+            FUNCTION,
             vec![NormTree::new(
-                Label::Block(BlockKind::Plain),
+                BLOCK,
                 vec![NormTree::leaf(Label::Let), NormTree::leaf(Label::Return)],
             )],
         );

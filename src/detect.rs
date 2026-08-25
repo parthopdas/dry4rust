@@ -195,6 +195,18 @@ mod tests {
     use crate::parse;
     use crate::tree::{BlockKind, Label, NormTree};
 
+    /// Plain-`fn` and plain-block labels; the qualifier and tail flags do not
+    /// matter to these fixtures.
+    const FUNCTION: Label = Label::Function {
+        is_async: false,
+        is_const: false,
+        is_unsafe: false,
+    };
+    const BLOCK: Label = Label::Block {
+        kind: BlockKind::Plain,
+        tail: false,
+    };
+
     /// Options that gate on nothing but the threshold.
     fn opts(threshold: f64) -> DetectOptions {
         DetectOptions {
@@ -207,9 +219,9 @@ mod tests {
     /// `Function(Block(Let, Return))` — 4 nodes.
     fn sample_tree() -> NormTree {
         NormTree::new(
-            Label::Function,
+            FUNCTION,
             vec![NormTree::new(
-                Label::Block(BlockKind::Plain),
+                BLOCK,
                 vec![NormTree::leaf(Label::Let), NormTree::leaf(Label::Return)],
             )],
         )
@@ -587,10 +599,7 @@ mod tests {
     /// filled with leaves (`nodes >= 2`).
     fn tree_of(nodes: usize) -> NormTree {
         let leaves = (0..nodes - 2).map(|_| NormTree::leaf(Label::Let)).collect();
-        NormTree::new(
-            Label::Function,
-            vec![NormTree::new(Label::Block(BlockKind::Plain), leaves)],
-        )
+        NormTree::new(FUNCTION, vec![NormTree::new(BLOCK, leaves)])
     }
 
     /// The pre-filter's claim: `sim` can never exceed `min/max`. Checked
@@ -728,6 +737,13 @@ mod tests {
     /// trick. `detect` must agree with it exactly (T11 is an optimization).
     /// The N61 overlap skip is *semantics*, not an optimization, so it is part
     /// of the baseline too.
+    ///
+    /// N71: because both sides call the same [`spans_overlap`] helper, any
+    /// differential test against this baseline bounds **T11 only** — it cannot
+    /// witness an N61 defect, since an error in the helper would move both
+    /// sides identically. N61's coverage is the predicate pin
+    /// (`the_overlap_predicate_is_symmetric_and_file_scoped`) plus the three
+    /// behavioural tests over real extracted fragments.
     fn reference_detect(analyzed: &[Analyzed], opts: &DetectOptions) -> Vec<Candidate> {
         let kept: Vec<&Analyzed> = analyzed
             .iter()

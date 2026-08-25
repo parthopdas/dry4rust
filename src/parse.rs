@@ -16,13 +16,16 @@ use proc_macro2::LineColumn;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 use syn::{
-    BinOp, Block, Expr, ExprBlock, ExprClosure, ImplItem, ImplItemFn, ItemFn, ItemImpl, Macro,
-    MacroDelimiter, Pat, PointerMutability, RangeLimits, Signature, Stmt, TraitItemFn, UnOp,
+    BinOp, Block, Expr, ExprBlock, ExprClosure, FnArg, ImplItem, ImplItemFn, ItemFn, ItemImpl,
+    Macro, MacroDelimiter, Pat, PointerMutability, RangeLimits, Receiver, Signature, Stmt,
+    TraitItemFn, Type, UnOp,
 };
 
 use crate::error::{Error, Result};
 use crate::model::{Analyzed, Fragment, FragmentKind};
-use crate::tree::{BlockKind, Delimiter, Label, Mutability, NormTree, RangeKind};
+use crate::tree::{
+    BinOpKind, BlockKind, Delimiter, Label, Mutability, NormTree, RangeKind, ReceiverForm, UnOpKind,
+};
 
 /// Parse `source` (the contents of the `/`-normalized `path`) and extract every
 /// fragment (A1's EXTENDED set), each paired with its normalized tree.
@@ -233,12 +236,19 @@ fn parse_error(path: &str, err: &syn::Error) -> Error {
 // --- Lowering ---------------------------------------------------------------
 
 /// Lower a function/method signature + body to a normalized tree.
+///
+/// The `async`/`const`/`unsafe` qualifiers ride on the [`Label::Function`] node
+/// and the receiver form on its own parameter node (N14) — both are label-only,
+/// so neither changes any node count.
 fn lower_fn(sig: &Signature, block: &Block) -> NormTree {
     let params = NormTree::new(
         Label::Params,
         sig.inputs
             .iter()
-            .map(|_| NormTree::leaf(Label::Param))
+            .map(|input| match input {
+                FnArg::Receiver(r) => NormTree::leaf(Label::Receiver(receiver_form(r))),
+                FnArg::Typed(_) => NormTree::leaf(Label::Param),
+            })
             .collect(),
     );
     let mut children = vec![params];
@@ -246,7 +256,42 @@ fn lower_fn(sig: &Signature, block: &Block) -> NormTree {
         children.push(NormTree::leaf(Label::ReturnType));
     }
     children.push(lower_block(block));
-    NormTree::new(Label::Function, children)
+    NormTree::new(
+        Label::Function {
+            is_async: sig.asyncness.is_some(),
+            is_const: sig.constness.is_some(),
+            is_unsafe: sig.unsafety.is_some(),
+        },
+        children,
+    )
+}
+
+/// Map a `self` parameter to its structural form (N73).
+///
+/// # Invariant
+///
+/// > The form is derived from the receiver's **effective self type**, so two
+/// > receivers rustc considers the same signature lower to the same form:
+/// > `self: &Self` ≡ `&self` and `self: &mut Self` ≡ `&mut self`.
+///
+/// Erasure decides *which* type is forgotten, never *whether* the receiver is a
+/// reference — that distinction is preserved here as [`Label::Reference`]
+/// preserves it everywhere else. Every other typed receiver (`Box<Self>`,
+/// `Rc<Self>`, `Pin<&mut Self>`, …) is [`ReceiverForm::Owned`] with its type
+/// erased, and `mut self` is [`ReceiverForm::Owned`] because binding mutability
+/// is erased for every other parameter too.
+fn receiver_form(receiver: &Receiver) -> ReceiverForm {
+    match &receiver.reference {
+        Some(_) if receiver.mutability.is_some() => ReceiverForm::RefMut,
+        Some(_) => ReceiverForm::Ref,
+        // A typed receiver: `receiver.mutability` here is the `mut` of
+        // `mut self: T`, a binding mode — the form comes from `T` alone.
+        None => match &*receiver.ty {
+            Type::Reference(r) if r.mutability.is_some() => ReceiverForm::RefMut,
+            Type::Reference(_) => ReceiverForm::Ref,
+            _ => ReceiverForm::Owned,
+        },
+    }
 }
 
 /// Lower an `impl` block body: one child per method, in source order.
@@ -282,9 +327,24 @@ fn lower_closure(e: &ExprClosure) -> NormTree {
 /// Lower a `{ .. }` block of the given flavor: one child per statement, in order.
 fn lower_block_of(kind: BlockKind, block: &Block) -> NormTree {
     NormTree::new(
-        Label::Block(kind),
+        Label::Block {
+            kind,
+            tail: has_tail_expr(block),
+        },
         block.stmts.iter().map(lower_stmt).collect(),
     )
+}
+
+/// Whether the block's last statement is a **tail expression** — written
+/// without its terminating semicolon, so the block evaluates to it (N15).
+///
+/// This is the one semicolon that changes meaning; see [`Label::Block`].
+fn has_tail_expr(block: &Block) -> bool {
+    match block.stmts.last() {
+        Some(Stmt::Expr(_, semi)) => semi.is_none(),
+        Some(Stmt::Macro(m)) => m.semi_token.is_none(),
+        _ => false,
+    }
 }
 
 /// Lower a plain `{ .. }` block.
@@ -557,48 +617,57 @@ fn range_kind(limits: &RangeLimits) -> RangeKind {
     }
 }
 
-/// Canonical token for a binary operator (preserved — not a Type-2 rename).
-fn bin_op(op: &BinOp) -> &'static str {
+/// The label kind for a binary operator (preserved — not a Type-2 rename).
+fn bin_op(op: &BinOp) -> BinOpKind {
     match op {
-        BinOp::Add(_) => "+",
-        BinOp::Sub(_) => "-",
-        BinOp::Mul(_) => "*",
-        BinOp::Div(_) => "/",
-        BinOp::Rem(_) => "%",
-        BinOp::And(_) => "&&",
-        BinOp::Or(_) => "||",
-        BinOp::BitXor(_) => "^",
-        BinOp::BitAnd(_) => "&",
-        BinOp::BitOr(_) => "|",
-        BinOp::Shl(_) => "<<",
-        BinOp::Shr(_) => ">>",
-        BinOp::Eq(_) => "==",
-        BinOp::Lt(_) => "<",
-        BinOp::Le(_) => "<=",
-        BinOp::Ne(_) => "!=",
-        BinOp::Ge(_) => ">=",
-        BinOp::Gt(_) => ">",
-        BinOp::AddAssign(_) => "+=",
-        BinOp::SubAssign(_) => "-=",
-        BinOp::MulAssign(_) => "*=",
-        BinOp::DivAssign(_) => "/=",
-        BinOp::RemAssign(_) => "%=",
-        BinOp::BitXorAssign(_) => "^=",
-        BinOp::BitAndAssign(_) => "&=",
-        BinOp::BitOrAssign(_) => "|=",
-        BinOp::ShlAssign(_) => "<<=",
-        BinOp::ShrAssign(_) => ">>=",
-        _ => "?",
+        BinOp::Add(_) => BinOpKind::Add,
+        BinOp::Sub(_) => BinOpKind::Sub,
+        BinOp::Mul(_) => BinOpKind::Mul,
+        BinOp::Div(_) => BinOpKind::Div,
+        BinOp::Rem(_) => BinOpKind::Rem,
+        BinOp::And(_) => BinOpKind::And,
+        BinOp::Or(_) => BinOpKind::Or,
+        BinOp::BitXor(_) => BinOpKind::BitXor,
+        BinOp::BitAnd(_) => BinOpKind::BitAnd,
+        BinOp::BitOr(_) => BinOpKind::BitOr,
+        BinOp::Shl(_) => BinOpKind::Shl,
+        BinOp::Shr(_) => BinOpKind::Shr,
+        BinOp::Eq(_) => BinOpKind::Eq,
+        BinOp::Lt(_) => BinOpKind::Lt,
+        BinOp::Le(_) => BinOpKind::Le,
+        BinOp::Ne(_) => BinOpKind::Ne,
+        BinOp::Ge(_) => BinOpKind::Ge,
+        BinOp::Gt(_) => BinOpKind::Gt,
+        BinOp::AddAssign(_) => BinOpKind::AddAssign,
+        BinOp::SubAssign(_) => BinOpKind::SubAssign,
+        BinOp::MulAssign(_) => BinOpKind::MulAssign,
+        BinOp::DivAssign(_) => BinOpKind::DivAssign,
+        BinOp::RemAssign(_) => BinOpKind::RemAssign,
+        BinOp::BitXorAssign(_) => BinOpKind::BitXorAssign,
+        BinOp::BitAndAssign(_) => BinOpKind::BitAndAssign,
+        BinOp::BitOrAssign(_) => BinOpKind::BitOrAssign,
+        BinOp::ShlAssign(_) => BinOpKind::ShlAssign,
+        BinOp::ShrAssign(_) => BinOpKind::ShrAssign,
+        // `syn::BinOp` is `#[non_exhaustive]`: every operator it defines today
+        // has a variant above, so this arm is unreachable until `syn` grows one.
+        _ => {
+            debug_assert!(false, "unhandled BinOp");
+            BinOpKind::Other
+        }
     }
 }
 
-/// Canonical token for a unary operator.
-fn un_op(op: &UnOp) -> &'static str {
+/// The label kind for a unary operator.
+fn un_op(op: &UnOp) -> UnOpKind {
     match op {
-        UnOp::Deref(_) => "*",
-        UnOp::Not(_) => "!",
-        UnOp::Neg(_) => "-",
-        _ => "?",
+        UnOp::Deref(_) => UnOpKind::Deref,
+        UnOp::Not(_) => UnOpKind::Not,
+        UnOp::Neg(_) => UnOpKind::Neg,
+        // As for `bin_op`: unreachable until `syn` adds a unary operator.
+        _ => {
+            debug_assert!(false, "unhandled UnOp");
+            UnOpKind::Other
+        }
     }
 }
 
@@ -624,15 +693,41 @@ mod tests {
         functions.remove(0).tree
     }
 
+    /// The tree of the single function/method fragment of a whole-item source
+    /// (the unit of the signature-shape tests, which need the `fn` line itself).
+    fn item_tree(source: &str) -> NormTree {
+        let mut functions: Vec<Analyzed> = extract("test.rs", source)
+            .expect("source should parse")
+            .into_iter()
+            .filter(|e| {
+                matches!(
+                    e.fragment.kind,
+                    FragmentKind::Function | FragmentKind::Method
+                )
+            })
+            .collect();
+        assert_eq!(functions.len(), 1, "expected exactly one fn fragment");
+        functions.remove(0).tree
+    }
+
     /// Assert every listed body lowers to a tree distinct from all the others.
     fn assert_all_distinct(bodies: &[&str]) {
-        let trees: Vec<NormTree> = bodies.iter().map(|b| body_tree(b)).collect();
+        assert_pairwise_distinct(bodies, body_tree);
+    }
+
+    /// [`assert_all_distinct`] over whole-item sources.
+    fn assert_items_distinct(sources: &[&str]) {
+        assert_pairwise_distinct(sources, item_tree);
+    }
+
+    fn assert_pairwise_distinct(sources: &[&str], lower: fn(&str) -> NormTree) {
+        let trees: Vec<NormTree> = sources.iter().map(|s| lower(s)).collect();
         for (i, left) in trees.iter().enumerate() {
             for (j, right) in trees.iter().enumerate().skip(i + 1) {
                 assert_ne!(
                     left, right,
                     "`{}` and `{}` must not lower to equal trees",
-                    bodies[i], bodies[j]
+                    sources[i], sources[j]
                 );
             }
         }
@@ -953,7 +1048,15 @@ fn outer() {
             .tree
             .children
             .iter()
-            .find(|c| c.label == Label::Block(BlockKind::Plain))
+            .find(|c| {
+                matches!(
+                    c.label,
+                    Label::Block {
+                        kind: BlockKind::Plain,
+                        ..
+                    }
+                )
+            })
             .expect("the function has a plain body block");
         assert_eq!(block.children[0].label, Label::Item);
         assert!(block.children[0].children.is_empty());
@@ -1035,6 +1138,161 @@ impl S {
     #[test]
     fn binary_operators_are_distinct() {
         assert_all_distinct(&["let z = a + b;", "let z = a - b;"]);
+    }
+
+    /// N27 — every operator `syn` spells differently gets a label of its own,
+    /// so no two of them relabel at cost 0 and inflate a score.
+    ///
+    /// What this pins is **latent** aliasing, not a bug that was live: the
+    /// replaced `_ => "?"` fallback was unreachable, because every operator
+    /// `syn` 2.0 defines already had a distinct token. It would have aliased
+    /// the day `syn` (which marks `BinOp` `#[non_exhaustive]`) added one — and
+    /// so would any future edit that reintroduces a shared label. That is what
+    /// this test guards; it does not demonstrate a score that was inflated.
+    #[test]
+    fn every_binary_operator_keeps_a_label_of_its_own() {
+        let ops = [
+            "+", "-", "*", "/", "%", "&&", "||", "^", "&", "|", "<<", ">>", "==", "<", "<=", "!=",
+            ">=", ">", "+=", "-=", "*=", "/=", "%=", "^=", "&=", "|=", "<<=", ">>=",
+        ];
+        let bodies: Vec<String> = ops.iter().map(|op| format!("let z = a {op} b;")).collect();
+        let borrowed: Vec<&str> = bodies.iter().map(String::as_str).collect();
+        assert_all_distinct(&borrowed);
+    }
+
+    /// The unary half of [`every_binary_operator_keeps_a_label_of_its_own`],
+    /// with the same caveat: `syn`'s three `UnOp` variants were already
+    /// distinct, so this pins against future aliasing.
+    #[test]
+    fn every_unary_operator_keeps_a_label_of_its_own() {
+        assert_all_distinct(&["let z = !x;", "let z = -x;", "let z = *x;"]);
+    }
+
+    /// N14 — an `async`/`const`/`unsafe fn` is not a clone of a plain one:
+    /// each qualifier changes what the item is to its callers.
+    ///
+    /// All six combinations of the three qualifiers that Rust allows. The
+    /// other two of the eight — `const async` and `const async unsafe` — are
+    /// not expressible: rustc rejects them with "functions cannot be both
+    /// `const` and `async`", so no source can reach that label.
+    #[test]
+    fn fn_qualifiers_are_distinct() {
+        assert_items_distinct(&[
+            "fn f() {}",
+            "async fn f() {}",
+            "const fn f() {}",
+            "unsafe fn f() {}",
+            "async unsafe fn f() {}",
+            "const unsafe fn f() {}",
+        ]);
+    }
+
+    /// N14 — the receiver form rides on the receiver's own parameter node, so a
+    /// method and a same-arity free function no longer lower alike.
+    #[test]
+    fn receiver_forms_are_distinct() {
+        assert_items_distinct(&[
+            "struct S; impl S { fn m(self) {} }",
+            "struct S; impl S { fn m(&self) {} }",
+            "struct S; impl S { fn m(&mut self) {} }",
+            "struct S; impl S { fn m(x: u32) {} }",
+        ]);
+
+        // …but `mut self` is a local binding mode, invisible to callers, and
+        // binding modes are erased for every other parameter too.
+        assert_eq!(
+            item_tree("struct S; impl S { fn m(self) {} }"),
+            item_tree("struct S; impl S { fn m(mut self) {} }")
+        );
+
+        // …and a typed `self: T` receiver over a non-reference `T` is `Owned`
+        // too: the type is erased exactly as every other parameter's type is.
+        assert_eq!(
+            item_tree("struct S; impl S { fn m(self) {} }"),
+            item_tree("struct S; impl S { fn m(self: Self) {} }")
+        );
+        assert_eq!(
+            item_tree("struct S; impl S { fn m(self) {} }"),
+            item_tree("struct S; impl S { fn m(self: Box<Self>) {} }")
+        );
+    }
+
+    /// N73 — the receiver form is taken from the receiver's *effective self
+    /// type*, so the spellings rustc treats as one signature lower alike.
+    ///
+    /// `self: &Self` is the same signature as `&self`; erasure decides *which*
+    /// type is forgotten, never *whether* the receiver is a reference.
+    #[test]
+    fn a_typed_reference_receiver_matches_its_sugared_form() {
+        // `self: &Self` ≡ `&self`, and neither is `self`.
+        assert_eq!(
+            item_tree("struct S; impl S { fn m(&self) {} }"),
+            item_tree("struct S; impl S { fn m(self: &Self) {} }")
+        );
+        assert_ne!(
+            item_tree("struct S; impl S { fn m(self) {} }"),
+            item_tree("struct S; impl S { fn m(self: &Self) {} }")
+        );
+
+        // …the same holds spelled with the concrete type.
+        assert_eq!(
+            item_tree("struct S; impl S { fn m(&self) {} }"),
+            item_tree("struct S; impl S { fn m(self: &S) {} }")
+        );
+
+        // `self: &mut Self` ≡ `&mut self` — the mutability comes from the
+        // reference, not from the `mut` of `mut self: T`.
+        assert_eq!(
+            item_tree("struct S; impl S { fn m(&mut self) {} }"),
+            item_tree("struct S; impl S { fn m(self: &mut Self) {} }")
+        );
+        assert_ne!(
+            item_tree("struct S; impl S { fn m(self: &Self) {} }"),
+            item_tree("struct S; impl S { fn m(self: &mut Self) {} }")
+        );
+
+        // The `mut` of `mut self: T` is a binding mode, so it cannot turn a
+        // shared reference receiver into a mutable one: `mut self: &Self` is
+        // still `&self`, never `&mut self`.
+        assert_eq!(
+            item_tree("struct S; impl S { fn m(&self) {} }"),
+            item_tree("struct S; impl S { fn m(mut self: &Self) {} }")
+        );
+        assert_ne!(
+            item_tree("struct S; impl S { fn m(&mut self) {} }"),
+            item_tree("struct S; impl S { fn m(mut self: &Self) {} }")
+        );
+        assert_eq!(
+            item_tree("struct S; impl S { fn m(&mut self) {} }"),
+            item_tree("struct S; impl S { fn m(mut self: &mut Self) {} }")
+        );
+
+        // …and every other typed receiver stays `Owned`, type erased.
+        assert_eq!(
+            item_tree("struct S; impl S { fn m(self) {} }"),
+            item_tree("struct S; impl S { fn m(self: std::rc::Rc<Self>) {} }")
+        );
+        assert_eq!(
+            item_tree("struct S; impl S { fn m(self) {} }"),
+            item_tree("struct S; impl S { fn m(self: std::pin::Pin<&mut Self>) {} }")
+        );
+    }
+
+    /// N15 — the statement-terminating semicolon that decides whether a block
+    /// evaluates to its last expression or to `()`.
+    #[test]
+    fn a_tail_expression_differs_from_a_semicolon_terminated_statement() {
+        assert_all_distinct(&["x", "x;"]);
+        assert_all_distinct(&["let z = { x };", "let z = { x; };"]);
+        assert_all_distinct(&["m!()", "m!();"]);
+
+        // A semicolon anywhere earlier carries no such meaning: a non-final
+        // statement expression is unit-typed either way, so the two lower alike
+        // and the label space is not spent on them.
+        assert_eq!(
+            body_tree("if a { b } else { c } x;"),
+            body_tree("if a { b } else { c }; x;")
+        );
     }
 
     #[test]

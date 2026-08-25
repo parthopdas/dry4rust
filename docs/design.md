@@ -52,7 +52,10 @@ depends on lib. This keeps the scoring math testable in isolation and the TED en
 - **Parse & extract** (`parse`): parses each file with `syn`; lowers **EXTENDED** granularity fragments —
   free functions, methods (inherent + trait-impl + trait-default bodies), `impl` block bodies, closures,
   and free `{}` blocks — into normalized label trees. Identifiers/literals are canonicalized so renamed
-  (Type-2) clones match; structure is preserved. Records each fragment's node count and line span.
+  (Type-2) clones match; structure is preserved, including `fn` qualifiers, receiver form
+  (`self`/`&self`/`&mut self`, taken from the effective self type so `self: &Self` ≡ `&self`; other
+  typed receivers are `Owned`), and the block's terminating semicolon. Records each fragment's node
+  count and line span.
 - **TED + similarity** (`ted`, `similarity`): unit-cost tree-edit distance per pair, normalized to a
   [0,1] score. `left_nodes`/`right_nodes` are the two fragments' normalized-tree node counts.
 - **Detect** (`detect`): applies `--min-lines`/`--min-nodes` floors, an admissible size-ratio pre-filter,
