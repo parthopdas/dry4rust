@@ -198,7 +198,7 @@ fn help_renders_the_defaults() {
     let help = stdout(&output);
 
     assert!(output.status.success());
-    assert!(help.contains("[default: 0.75]"), "got: {help}");
+    assert!(help.contains("[default: 0.85]"), "got: {help}");
     assert!(help.contains("[default: 4]"), "got: {help}");
     assert!(help.contains("[default: 20]"), "got: {help}");
     assert!(help.contains("[default: text]"), "got: {help}");

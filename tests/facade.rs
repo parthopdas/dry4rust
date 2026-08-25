@@ -10,6 +10,18 @@ use std::path::{Path, PathBuf};
 use dry4rust::{run, Format, RunOptions, RunOutput};
 use tempfile::TempDir;
 
+/// The threshold every fixture in this file runs at. **Deliberately not the
+/// shipped default** — `clap` owns that number and is its single source (N29),
+/// and binding this harness to it would recreate the second source N29 forbids
+/// and couple these lib-level tests to the binary's CLI layer.
+///
+/// It is set low on purpose so the fixtures exercise the **gate** (does a pair
+/// clear the threshold at all) rather than the **calibration** (where the
+/// threshold sits). No test here is sensitive to its value: the default-path
+/// runs all score `1.00` and pass at any threshold in `[0, 1)`. That is why
+/// D5's `0.75 → 0.85` recalibration moved zero goldens — by design, not by gap.
+const HARNESS_THRESHOLD: f64 = 0.75;
+
 /// A renamed (Type-2) clone pair: same structure, different identifiers and
 /// literals, comfortably above the default `--min-lines`/`--min-nodes` floors.
 const LEFT: &str = "fn sum_positive(values: &[i32]) -> i32 {
@@ -44,7 +56,10 @@ const LONE: &str = "fn describe(flag: bool) -> String {
 ";
 
 /// A single-method `impl`: `Impl(F)` vs `F` differs by one node, so the
-/// `impl`↔method pair scores ~0.95 and would sail through the 0.75 gate.
+/// `impl`↔method pair scores `1 − 1/(n+1)`, which at the `--min-nodes 20` floor
+/// is already `≥ 0.95238` and rises with `n`. It therefore sails through **any**
+/// threshold at or below that bound — the N61 filter, not the gate, is what
+/// keeps it out of the report.
 const SINGLE_METHOD_IMPL: &str = "struct Counter {
     seen: u32,
 }
@@ -76,7 +91,7 @@ fn prefix(root: &Path) -> String {
 fn options(root: &Path, format: Format) -> RunOptions {
     RunOptions {
         paths: vec![PathBuf::from(root)],
-        threshold: 0.75,
+        threshold: HARNESS_THRESHOLD,
         min_lines: 4,
         min_nodes: 20,
         // The binary's ceiling (`cli::MAX_NODES`); every fixture here is far

@@ -3,7 +3,7 @@
 //!
 //! The surface is the dry4go skin: `dry4rust [options] [paths...]` with
 //! `--threshold`, `--min-lines`, `--min-nodes`, `--format text|json` and the
-//! `--json` / `--text` aliases. All defaults (`0.75`, `4`, `20`, `text`, `.`)
+//! `--json` / `--text` aliases. All defaults (`0.85`, `4`, `20`, `text`, `.`)
 //! live here (N29) so `--help` renders them from a single source, and the
 //! `--format` value enum is local (N37) so `clap` never reaches the `report`
 //! adapter.
@@ -53,7 +53,13 @@ struct Cli {
     paths: Vec<PathBuf>,
 
     /// Minimum similarity, in `0.0..=1.0`, for a pair to be reported.
-    #[arg(long, default_value_t = 0.75, value_parser = threshold)]
+    // `0.85` per D5 (was `0.75`). Under A2's normalization a threshold `t` is
+    // identically a cap on size ratio (`sim ≤ n_small / n_large` — the same
+    // identity T11's pre-filter uses), so `0.85` admits at most a 17.6%
+    // node-count difference where `0.75` admitted 33%. Kept out of the doc
+    // comment so `--help` stays the dry4go skin; see D5 for the derivation,
+    // the confidence, and the revisit trigger.
+    #[arg(long, default_value_t = 0.85, value_parser = threshold)]
     threshold: f64,
 
     /// Minimum source lines a fragment must span to be considered.
@@ -142,7 +148,7 @@ mod tests {
     fn defaults_come_from_the_clap_layer() {
         let options = parse(&["dry4rust"]);
         assert_eq!(options.paths, vec![PathBuf::from(".")]);
-        assert_eq!(options.threshold, 0.75);
+        assert_eq!(options.threshold, 0.85);
         assert_eq!(options.min_lines, 4);
         assert_eq!(options.min_nodes, 20);
         assert_eq!(options.max_nodes, MAX_NODES);

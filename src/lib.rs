@@ -54,7 +54,7 @@ pub const MAX_SUPPORTED_NODES: usize = u32::MAX as usize / 2;
 /// fragment ceiling, and the format.
 ///
 /// Defaults live in the binary's `clap` layer (N29), not here — this struct is
-/// deliberately `Default`-free so there is a single source for `0.75/4/20/text`.
+/// deliberately `Default`-free so there is a single source for `0.85/4/20/text`.
 ///
 /// **Pre-1.0 unstable (N41):** the crate has a single consumer (its own
 /// binary), so fields are added here as the pipeline grows rather than hidden

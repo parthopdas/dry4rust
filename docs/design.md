@@ -58,6 +58,16 @@ depends on lib. This keeps the scoring math testable in isolation and the TED en
   count and line span.
 - **TED + similarity** (`ted`, `similarity`): unit-cost tree-edit distance per pair, normalized to a
   [0,1] score. `left_nodes`/`right_nodes` are the two fragments' normalized-tree node counts.
+  **Known limitation — what the score is evidence of.** Identifiers, literals and types are canonicalized
+  away, and macro token streams are never parsed (a macro invocation is a single leaf), so a score
+  measures the *structure surrounding* the erased content, not the text a reader would point at. Two
+  fragments differing only in their literal or macro payloads therefore score as identical, and a
+  genuine duplicate may be reported with a score and node counts that describe its enclosing shape
+  rather than the duplicated content — a real finding, arrived at for an adjacent reason. Treat a
+  finding as a pointer to a pair of locations, not as an explanation of why they match. The size floors
+  do not address this: they change *which* fragments are scored, not what the score is evidence of.
+  Partially un-erasing the label model would, and is rejected — it is a breaking change to the meaning
+  of `score`.
 - **Detect** (`detect`): applies `--min-lines`/`--min-nodes` floors, an admissible size-ratio pre-filter,
   and an **intra-pair overlap filter** — a pair whose two fragments share a path and whose line spans
   intersect is dropped at admission, before TED. EXTENDED extraction emits nested fragments, so the pair
