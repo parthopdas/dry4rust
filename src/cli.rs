@@ -19,12 +19,17 @@ use dry4rust::{Format, RunOptions};
 /// TED is super-quadratic in the node counts, so a pair of very large
 /// fragments — which the size-ratio pre-filter cannot prune, being
 /// similar-sized — can dominate a whole run. `2000` nodes is far above any
-/// hand-written function or `impl` block we expect to compare (the S1 dogfood's
-/// largest fragment is an order of magnitude smaller) while keeping the worst
-/// admitted pair's DP matrix at ~4M `u32` cells. It is deliberately **not** a
-/// CLI flag: the dry4go skin has no such option, and a policy nobody has needed
-/// to tune does not warrant one (YAGNI). Kept here so all defaults stay in the
-/// clap layer (N29).
+/// hand-written fragment we expect to compare: re-measured on the S1 dogfood
+/// after EXTENDED extraction (T8), the largest fragment in this repo is **439**
+/// nodes (a single function; the largest `impl` block, whose tree is roughly
+/// the sum of its methods', is 244), so the ceiling has ~4.5× headroom while
+/// keeping the worst admitted pair's DP matrix at ~4M `u32` cells (N66).
+/// Dropping an oversized fragment is also **benign for an `impl` block**: its
+/// methods are extracted and compared individually, so the code inside it is
+/// still covered — only the whole-block view is lost. It is deliberately
+/// **not** a CLI flag: the dry4go skin has no such option, and a policy nobody
+/// has needed to tune does not warrant one (YAGNI). Kept here so all defaults
+/// stay in the clap layer (N29).
 const MAX_NODES: usize = 2000;
 
 /// Parse the process arguments into library run options.

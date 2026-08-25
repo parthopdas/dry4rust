@@ -271,6 +271,54 @@ fn a_fragment_exactly_at_the_ceiling_is_kept() {
     assert!(output.diagnostics.is_empty());
 }
 
+/// N61: a single-method `impl` must not report a DUPLICATE against its own
+/// method. `Impl(F)` vs `F` differs by one node, so the pair scores ~0.95 and
+/// would sail through the 0.75 gate; `detect` drops it at admission because the
+/// two fragments overlap in source. The genuine cross-file clone still reports.
+#[test]
+fn a_single_method_impl_does_not_pair_with_its_own_method() {
+    let dir = duplicate_pair_tree();
+    let at = prefix(dir.path());
+    write(
+        dir.path(),
+        "wrapper.rs",
+        "struct Counter {
+    seen: u32,
+}
+
+impl Counter {
+    fn classify(&mut self, flag: bool) -> String {
+        self.seen += 1;
+        match flag {
+            true => String::from(\"yes\"),
+            false => String::from(\"no\"),
+        }
+    }
+}
+",
+    );
+
+    let output = run_on(dir.path(), Format::Text);
+    assert_eq!(
+        output.report,
+        format!("DUPLICATE score=1.00\n  {at}a.rs:1-9\n  {at}b.rs:1-9\n"),
+        "expected exactly the cross-file clone"
+    );
+    assert!(output.diagnostics.is_empty());
+
+    // Non-vacuous (N51): both the `impl` block (5-13) and its method (6-12)
+    // clear the floors — a copy of the file pairs with them across files. Only
+    // the *overlapping* in-file pair was suppressed.
+    write(
+        dir.path(),
+        "copy.rs",
+        &fs::read_to_string(dir.path().join("wrapper.rs")).expect("read"),
+    );
+    let with_copy = run_on(dir.path(), Format::Text);
+    assert!(with_copy.report.contains(&format!("{at}copy.rs:5-13")));
+    assert!(with_copy.report.contains(&format!("{at}copy.rs:6-12")));
+}
+
 #[test]
 fn a_missing_root_fails_the_whole_run() {
     let dir = TempDir::new().expect("create temp dir");

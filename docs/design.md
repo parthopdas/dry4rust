@@ -56,8 +56,13 @@ depends on lib. This keeps the scoring math testable in isolation and the TED en
 - **TED + similarity** (`ted`, `similarity`): unit-cost tree-edit distance per pair, normalized to a
   [0,1] score. `left_nodes`/`right_nodes` are the two fragments' normalized-tree node counts.
 - **Detect** (`detect`): applies `--min-lines`/`--min-nodes` floors, an admissible size-ratio pre-filter,
-  then TED; keeps pairs at or above `--threshold`; assigns canonical left/right; orders results
-  deterministically.
+  and an **intra-pair overlap filter** — a pair whose two fragments share a path and whose line spans
+  intersect is dropped at admission, before TED. EXTENDED extraction emits nested fragments, so the pair
+  set otherwise contains every fragment against its own ancestor (a single-method `impl` vs that method
+  scores ~0.95 by construction); such a pair is a report artifact, not a clone. This *intra-pair*
+  containment is a different relation from `dedup`'s *pair-vs-pair* containment and is not reachable by
+  it. Legitimate in-file clones have disjoint spans and are unaffected. Surviving pairs get TED; pairs at
+  or above `--threshold` are kept; each is assigned canonical left/right and ordered deterministically.
 - **Dedup** (`dedup`): removes redundant nested findings — a nested pair contained on **both** sides by an
   outer pair is suppressed in favor of the maximal parent; identical spans de-duplicated; one-sided
   containment keeps both.

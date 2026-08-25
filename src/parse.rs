@@ -730,6 +730,27 @@ fn third() {}
         let mut sorted = starts.clone();
         sorted.sort_unstable();
         assert_eq!(starts, sorted);
+
+        // Nested (T8) fragments share start lines with their parents, so the
+        // whole canonical key — not just the start line — is the order.
+        let nested = "\
+struct S;
+impl S {
+    fn m(&self) { let f = |x| { x }; }
+}
+fn free() { { let y = 1; } }
+";
+        let keys: Vec<(String, usize, usize)> = extract_ok(nested)
+            .iter()
+            .map(|e| {
+                let (path, start, end) = e.fragment.canonical_key();
+                (path.to_string(), start, end)
+            })
+            .collect();
+        assert!(keys.len() > 3, "the fixture must nest, got {keys:?}");
+        let mut sorted_keys = keys.clone();
+        sorted_keys.sort();
+        assert_eq!(keys, sorted_keys);
     }
 
     #[test]
@@ -923,8 +944,85 @@ fn outer() {
     let g = |y| y;
 }
 ";
-        let kinds: Vec<FragmentKind> = extract_ok(source).iter().map(|e| e.fragment.kind).collect();
+        let extracted = extract_ok(source);
+        let kinds: Vec<FragmentKind> = extracted.iter().map(|e| e.fragment.kind).collect();
         assert_eq!(kinds, vec![FragmentKind::Function, FragmentKind::Closure]);
+
+        // …and the nested `fn` is a childless `Item` leaf in its parent's tree.
+        let block = extracted[0]
+            .tree
+            .children
+            .iter()
+            .find(|c| c.label == Label::Block(BlockKind::Plain))
+            .expect("the function has a plain body block");
+        assert_eq!(block.children[0].label, Label::Item);
+        assert!(block.children[0].children.is_empty());
+    }
+
+    #[test]
+    fn a_closure_nested_in_a_closure_yields_both_fragments() {
+        let source = "\
+fn outer() {
+    let make = |a| {
+        move |b| a + b
+    };
+}
+";
+        let extracted = extract_ok(source);
+        let kinds: Vec<FragmentKind> = extracted.iter().map(|e| e.fragment.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                FragmentKind::Function,
+                FragmentKind::Closure,
+                FragmentKind::Closure,
+            ]
+        );
+        let spans: Vec<(usize, usize)> = extracted
+            .iter()
+            .map(|e| (e.fragment.start_line, e.fragment.end_line))
+            .collect();
+        assert_eq!(spans, vec![(1, 5), (2, 4), (3, 3)]);
+    }
+
+    /// N63 — a ratified semantic commitment, pinned deliberately: associated
+    /// consts and types carry only erased names/types, so two `impl` blocks
+    /// that differ *only* in them lower to **equal** trees and are Type-2
+    /// clones of each other.
+    #[test]
+    fn impls_differing_only_in_associated_consts_and_types_lower_to_equal_trees() {
+        let plain = "\
+struct S;
+impl S {
+    fn m(&self) { let x = 1; }
+}
+";
+        let decorated = "\
+struct S;
+impl S {
+    const LIMIT: u32 = 7;
+    type Alias = Vec<String>;
+    fn m(&self) { let x = 1; }
+}
+";
+        let tree_of_kind = |source: &str, kind: FragmentKind| -> NormTree {
+            let mut found: Vec<Analyzed> = extract_ok(source)
+                .into_iter()
+                .filter(|e| e.fragment.kind == kind)
+                .collect();
+            assert_eq!(found.len(), 1, "expected exactly one {kind:?} fragment");
+            found.remove(0).tree
+        };
+
+        assert_eq!(
+            tree_of_kind(plain, FragmentKind::ImplBlock),
+            tree_of_kind(decorated, FragmentKind::ImplBlock),
+            "associated consts/types must contribute no shape"
+        );
+        assert_eq!(
+            tree_of_kind(plain, FragmentKind::Method),
+            tree_of_kind(decorated, FragmentKind::Method)
+        );
     }
 
     // --- Normalization inequality guards (R3) -------------------------------

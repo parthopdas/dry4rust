@@ -4,8 +4,9 @@
 //! The compute seam between `parse` (which produces [`Analyzed`]) and `report`:
 //! fragments below the `--min-lines`/`--min-nodes` floors are dropped first,
 //! every surviving tree is prepared **once** (N17), each remaining pair that
-//! the size-ratio pre-filter admits is scored with `ted` + `similarity`
-//! composed here (N21), and pairs at or above the threshold become
+//! the size-ratio pre-filter admits and that does not overlap in source
+//! ([`spans_overlap`], N61) is scored with `ted` + `similarity` composed here
+//! (N21), and pairs at or above the threshold become
 //! [`Candidate`]s ordered by canonical `(left, right)` key.
 //! Containment/identical-span dedup is a separate policy (`dedup`).
 
@@ -28,8 +29,10 @@ pub(crate) struct DetectOptions {
 /// Scores every admissible fragment pair and returns the candidates that meet
 /// `opts.threshold`, sorted by canonical `(left, right)` key.
 ///
-/// Self-pairs are never produced and each unordered pair is scored once. The
-/// result is a pure function of the input set — input order does not affect it.
+/// Self-pairs are never produced, each unordered pair is scored once, and a
+/// pair whose fragments overlap in source is never scored at all
+/// ([`spans_overlap`], N61). The result is a pure function of the input set —
+/// input order does not affect it.
 ///
 /// Fragments are walked in **node-count order** so the size-ratio pre-filter
 /// ([`best_possible_score`]) can `break` the inner loop instead of testing
@@ -66,24 +69,29 @@ pub(crate) fn detect(analyzed: &[Analyzed], opts: &DetectOptions) -> Vec<Candida
             // partner ends the row — with counts ascending, every later partner
             // is larger still and so rejected too (N53).
             if best_possible_score(item_a.fragment.node_count, item_b.fragment.node_count)
-                >= opts.threshold
+                < opts.threshold
             {
-                let delta = ted::distance(tree_a, tree_b);
-                let score = similarity(
-                    delta,
-                    item_a.fragment.node_count,
-                    item_b.fragment.node_count,
-                );
-                if score >= opts.threshold {
-                    let (left, right) = canonical_sides(&item_a.fragment, &item_b.fragment);
-                    candidates.push(Candidate {
-                        left: left.clone(),
-                        right: right.clone(),
-                        score,
-                    });
-                }
-            } else {
                 break;
+            }
+            // N61: skip the pair, never the rest of the row — overlap says
+            // nothing about later partners' node counts, so the `break` above
+            // stays the size-ratio rejection's alone.
+            if spans_overlap(&item_a.fragment, &item_b.fragment) {
+                continue;
+            }
+            let delta = ted::distance(tree_a, tree_b);
+            let score = similarity(
+                delta,
+                item_a.fragment.node_count,
+                item_b.fragment.node_count,
+            );
+            if score >= opts.threshold {
+                let (left, right) = canonical_sides(&item_a.fragment, &item_b.fragment);
+                candidates.push(Candidate {
+                    left: left.clone(),
+                    right: right.clone(),
+                    score,
+                });
             }
         }
     }
@@ -146,6 +154,24 @@ fn best_possible_score(nodes_a: usize, nodes_b: usize) -> f64 {
     let min = nodes_a.min(nodes_b);
     let max = nodes_a.max(nodes_b);
     similarity(max - min, min, max)
+}
+
+/// Whether two fragments overlap in source: same file, intersecting line spans.
+///
+/// EXTENDED extraction (T8) emits nested fragments, so the pair set contains
+/// fragments paired with their own **ancestors** — a single-method `impl`
+/// against that method, a function against the free block that is its whole
+/// body, a closure that is nearly its whole enclosing function. Such a pair is
+/// structurally near-identical by construction (`Impl(F)` vs `F` is δ = 1, i.e.
+/// `1 − 1/(n+1)` ≈ 0.95 at the default floors) and is a report artifact, not a
+/// clone. Overlapping pairs are therefore dropped at admission, before TED
+/// (N61) — cheaper than scoring them, and it keeps `dedup`'s containment policy
+/// purely *pair-vs-pair* (an outer pair suppressing a nested pair), which is a
+/// different relation from this *intra-pair* containment and does not reach it.
+///
+/// Legitimate in-file clones have disjoint spans and are unaffected.
+fn spans_overlap(a: &Fragment, b: &Fragment) -> bool {
+    a.path == b.path && a.start_line <= b.end_line && b.start_line <= a.end_line
 }
 
 /// Whether a fragment clears both size floors.
@@ -406,6 +432,149 @@ mod tests {
         assert!(detect(&parsed, &opts(0.75)).is_empty());
     }
 
+    // ---- N61: the intra-pair overlap filter ----
+
+    #[test]
+    fn a_single_method_impl_is_not_a_candidate_against_its_own_method() {
+        // `Impl(F)` vs `F` is δ = 1 — ~0.95 at the default floors, so without
+        // the overlap filter every single-method `impl` reports itself.
+        let source = r#"
+            struct S;
+            impl S {
+                fn render(&self, values: &[i32]) -> i32 {
+                    let mut total = 0;
+                    for value in values {
+                        if *value > 0 {
+                            total += *value;
+                        }
+                    }
+                    total
+                }
+            }
+        "#;
+        let parsed = parse::extract("impl.rs", source).expect("fixture should parse");
+        let kinds: Vec<FragmentKind> = parsed.iter().map(|e| e.fragment.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![FragmentKind::ImplBlock, FragmentKind::Method],
+            "the fixture must actually produce the ancestor/descendant pair"
+        );
+        assert!(detect(&parsed, &opts(0.75)).is_empty());
+        // …and not merely because the pair scores low: it scores ~0.95.
+        let score = similarity(
+            ted::distance(
+                &PreparedTree::new(&parsed[0].tree),
+                &PreparedTree::new(&parsed[1].tree),
+            ),
+            parsed[0].fragment.node_count,
+            parsed[1].fragment.node_count,
+        );
+        assert!(score > 0.9, "expected a high artifact score, got {score}");
+    }
+
+    #[test]
+    fn a_nested_closure_is_not_a_candidate_against_its_enclosing_fn() {
+        let source = r#"
+            fn wrapper(values: &[i32]) -> i32 {
+                let scan = |xs: &[i32]| {
+                    let mut total = 0;
+                    for value in xs {
+                        if *value > 0 {
+                            total += *value;
+                        }
+                    }
+                    total
+                };
+                scan(values)
+            }
+        "#;
+        let parsed = parse::extract("closure.rs", source).expect("fixture should parse");
+        let kinds: Vec<FragmentKind> = parsed.iter().map(|e| e.fragment.kind).collect();
+        assert_eq!(kinds, vec![FragmentKind::Function, FragmentKind::Closure]);
+        assert!(detect(&parsed, &opts(0.75)).is_empty());
+    }
+
+    #[test]
+    fn two_disjoint_in_file_clones_still_pair() {
+        // The filter must not over-reach: same file is not enough, the spans
+        // must intersect.
+        let source = r#"
+            fn sum_positive(values: &[i32]) -> i32 {
+                let mut total = 0;
+                for value in values {
+                    if *value > 0 {
+                        total += *value;
+                    }
+                }
+                total
+            }
+
+            fn add_upbeat(numbers: &[i32]) -> i32 {
+                let mut running = 7;
+                for number in numbers {
+                    if *number > 3 {
+                        running += *number;
+                    }
+                }
+                running
+            }
+        "#;
+        let parsed = parse::extract("same_file.rs", source).expect("fixture should parse");
+        let found = detect(&parsed, &opts(0.75));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].score, 1.0);
+    }
+
+    #[test]
+    fn overlap_skips_only_the_pair_and_never_ends_the_row() {
+        // `outer` overlaps `inner`, and both are clones of `elsewhere`. Were
+        // the skip a `break`, the row would stop at the overlapping partner and
+        // lose the pair that follows it in node-count order.
+        let gates = DetectOptions {
+            threshold: 0.75,
+            min_lines: 0,
+            min_nodes: 0,
+        };
+        let input = [
+            analyzed("a.rs", 1, 10, sample_tree()),
+            analyzed("a.rs", 2, 5, sample_tree()),
+            analyzed("b.rs", 1, 4, sample_tree()),
+        ];
+        let found = detect(&input, &gates);
+        let pairs: Vec<String> = found
+            .iter()
+            .map(|c| format!("{:?}|{:?}", c.left.canonical_key(), c.right.canonical_key()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                format!("{:?}|{:?}", ("a.rs", 1, 10), ("b.rs", 1, 4)),
+                format!("{:?}|{:?}", ("a.rs", 2, 5), ("b.rs", 1, 4)),
+            ]
+        );
+        assert_eq!(found, reference_detect(&input, &gates));
+    }
+
+    #[test]
+    fn the_overlap_predicate_is_symmetric_and_file_scoped() {
+        let touching = analyzed("a.rs", 1, 10, sample_tree()).fragment;
+        let inside = analyzed("a.rs", 4, 6, sample_tree()).fragment;
+        let abutting = analyzed("a.rs", 10, 12, sample_tree()).fragment;
+        let after = analyzed("a.rs", 11, 12, sample_tree()).fragment;
+        let other_file = analyzed("b.rs", 4, 6, sample_tree()).fragment;
+
+        for (a, b, expected) in [
+            (&touching, &inside, true),
+            (&touching, &abutting, true), // sharing a single line is overlap
+            (&touching, &after, false),
+            (&touching, &other_file, false),
+            (&touching, &touching, true),
+        ] {
+            assert_eq!(spans_overlap(a, b), expected, "{a:?} vs {b:?}");
+            assert_eq!(spans_overlap(b, a), expected, "{b:?} vs {a:?}");
+        }
+    }
+
     // ---- T11: the admissible size-ratio pre-filter ----
 
     /// The pre-filter as the call site in [`detect`] applies it: keep the pair
@@ -557,6 +726,8 @@ mod tests {
 
     /// The unfiltered baseline: score every pair, no pre-filter, no ordering
     /// trick. `detect` must agree with it exactly (T11 is an optimization).
+    /// The N61 overlap skip is *semantics*, not an optimization, so it is part
+    /// of the baseline too.
     fn reference_detect(analyzed: &[Analyzed], opts: &DetectOptions) -> Vec<Candidate> {
         let kept: Vec<&Analyzed> = analyzed
             .iter()
@@ -566,6 +737,9 @@ mod tests {
         let mut candidates = Vec::new();
         for (index, item_a) in kept.iter().enumerate() {
             for item_b in kept.iter().skip(index + 1) {
+                if spans_overlap(&item_a.fragment, &item_b.fragment) {
+                    continue;
+                }
                 let delta = ted::distance(
                     &PreparedTree::new(&item_a.tree),
                     &PreparedTree::new(&item_b.tree),

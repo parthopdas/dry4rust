@@ -113,7 +113,6 @@ pub struct RunOutput {
 /// [`RunOptions::max_nodes`] is dropped here — before `detect` sees it, so no
 /// pair containing it is ever scored — with its own deterministic diagnostic.
 /// The ceiling lives in this composition root, not in `detect`, because core is
-/// The ceiling lives in this composition root, not in `detect`, because core is
 /// side-effect-free (A5) and this is where the skip policy already lives. The
 /// requested ceiling is clamped to [`MAX_SUPPORTED_NODES`] first, and the
 /// clamped value is both the one enforced and the one named in the diagnostic.
