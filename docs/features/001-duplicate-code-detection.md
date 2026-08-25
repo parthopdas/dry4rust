@@ -1,6 +1,6 @@
 # Feature: Duplicate Code Detection (TED core, dry4go UX skin)
 **Branch:** vibe/001-duplicate-code-detection
-**Status:** WIP — **S1 DONE**; T11 + T8 landed. Next: T8b (N61) → scoring pass → T9/T10 → D5 → T12
+**Status:** WIP — **S1 DONE**; T11/T8/T8b landed. Next: T8c scoring pass → T9/T10 → D5 → T12
 
 ## Requirements
 
@@ -81,7 +81,8 @@ built binary against fixture trees.
 | T7  | S1 | CLI wiring (`clap`): flags/aliases, TED defaults, format selection, `anyhow` error mapping, exit 0 on success / non-zero on usage+internal. **Integration:** run binary on fixture dir, assert text & json stdout. | Done | be5128b |
 | T7b | S1 | Close S1 test gaps before stamping S1 done: **N43** CRLF-invariance (`\n` vs `\r\n` fixture → byte-identical report), **N44** `.gitignore`/`target/` skipping exercised through `run()`, **N45** exit-1 at the binary level. Also **N42** design.md drift (name lib.rs composition-root role). | Done | 400243a |
 | T8  | S2 | Extend extraction to `impl` block bodies, closures, free `{}` blocks. **Unit:** nested-fragment extraction + node counts. Ships the N23/N30 ceiling, N26 `u32` cells, N41, N56–N58. | Done | 5d04900 |
-| T8b | S2 | **N61 intra-pair containment filter** (found at T8 review): drop pairs whose fragments share a path and whose spans overlap, at admission, pre-TED. Without it every single-method `impl` reports against its own method at ~0.95. Also N63/N66/N67. **Must precede the scoring pass (N62).** | Pending | - |
+| T8b | S2 | **N61 intra-pair containment filter** (found at T8 review): drop pairs whose fragments share a path and whose spans overlap, at admission, pre-TED. Without it every single-method `impl` reports against its own method at ~0.95. Also N63/N66/N67. **Must precede the scoring pass (N62).** | Done | 19bc77b |
+| T8c | S2 | **Scoring pass (N27/N14/N15) — ONE commit (N55).** Replace the `_ => "?"` operator fallback with distinct `BinOp`/`UnOp` labels; carry `async`/`const`/`unsafe fn` qualifiers + receiver form and statement-terminating semicolons into the tree. Re-baseline goldens and dogfood after. Also N71/N72. **Blocking before D5.** | Pending | - |
 | T9  | S2 | Containment-dedup policy (maximal-parent-wins, both-sides; identical-span dedup; deterministic tie-break). **Unit:** both-sided suppression; one-sided keep; identical-span dedup. | Pending | - |
 | T10 | S2 | **Integration:** fixture with duplicated nested closures/blocks → assert only maximal pairs reported. | Pending | - |
 | T11 | S3 | Admissible size-ratio pre-filter (`sim ≤ min(n₁,n₂)/max(n₁,n₂)`): prune pairs below `--threshold` before TED — provably never drops a real match. **Unit:** prune-soundness (a would-be match is never pruned). **Landed as `similarity(max−min,min,max) >= threshold` — see N52 restated.** | Done | bb38a40 |
@@ -600,3 +601,62 @@ in-body nested items opaque; `Impl(Function…)` tree shape — the root is 1 no
 **Open ledger after T8:** **N61/N62** (T8b, blocking clean calibration) · N14/N15/**N27** (scoring pass,
 after T8b) · N63/N66/N67 (with T8b) · N64/N65 (record) · N31/N33/N34/N40 (record/T12) · N46 (record) ·
 N59 (rescopes T12) · N60 (record).
+
+### T8b review notes (Anders — APPROVE-WITH-NOTES)
+
+**N61 closed in code, open in docs.** `spans_overlap` at `detect` admission is the right layer:
+it is an admissibility predicate over the *input pair set*, peer to `passes_floors` /
+`best_possible_score`, needs only `Fragment`, keeps core pure, and spends no TED on artifacts.
+`dedup` is pair-vs-pair post-scoring and could not have reached it. Ordering (size-ratio `break`
+first, overlap `continue` second) leaves the N53 row-terminator decision set unchanged — pinned.
+Applying the skip to `reference_detect` was correct: N61 is semantics, so it belongs in the
+baseline; the differential test keeps bounding T11 alone. Ratified: 16 → 13 dogfood, all three
+removals ancestor/descendant; no golden churn.
+
+- **N68 (A3 — restate; second scope gap; do with T9, `dedup.rs` is still a stub so it is free).**
+  N61 asked for A3 to distinguish the two containment relations; A3 is unchanged, and the gap has
+  already bitten: two copies of a single-method `impl` in different files yield **four** findings —
+  `impl↔impl`, `m↔m`, and two `impl↔m` crosses at ~0.96. Only `m↔m` is *strictly* contained on both
+  sides; the crosses are strict on one side and **equal** on the other, which A3's "one-sided
+  containment keeps both" currently reads as *keep the artifact*. A3 must state:
+  1. **Intra-pair** containment (one pair, left contains right, same file) — not dedup's business;
+     removed at admission by N61.
+  2. **Pair-vs-pair** containment — P dominates Q iff, side-for-side after canonical assignment,
+     `Q.left ⊆ P.left` **and** `Q.right ⊆ P.right` (same path; span containment; **equality allowed
+     on a side**) and `P ≠ Q`. Q is suppressed. This is what removes the cross-granularity crosses.
+  3. "Keeps both" narrows to: containment on one side, **disjoint or partially overlapping** on the
+     other.
+  4. Identical on both sides ⇒ de-duplicate, keep the canonically-first `(path,start,end)`.
+  **T10 fixture:** two files each holding one single-method `impl` ⇒ pre-dedup 4, post-dedup **1**.
+  While in A1/A3, also land N65's `impl`-emits-a-wrapper / `trait`-does-not asymmetry as a stated
+  decision.
+- **N69 (record-only — line-granular overlap can false-negative).** `spans_overlap` is line-based, so
+  two genuinely disjoint fragments sharing one boundary line (`fn a(){…} fn b(){…}` on one line) are
+  dropped. Accepted: rustfmt makes it near-unreachable, the failure is a miss not a false report, and
+  byte spans cost more than the case is worth. Revisit only if D5 shows real misses.
+- **N70 (N66 residual — do with T12/N59).** 439 (Function) vs 244 (ImplBlock) falsifies N66's premise
+  and confirms 2000; R1 and N59's T12 scope are unchanged. But (a) the number is **corpus-specific** —
+  say so where it is cited, a 900-line `impl` elsewhere is not excluded — and (b) N66's other half is
+  still open: the **2000×2000 worst-admitted-pair wall-clock** was not measured. Fold it into N59's
+  envelope; if one maximal admitted pair costs seconds, 2000 is too generous. T12's synthesized
+  corpora should include one near-ceiling fragment.
+- **N71 (trivial, with the scoring pass).** Extend `reference_detect`'s doc: because both sides call
+  the same helper, this test bounds **T11 only** and does **not** cover N61 — N61's coverage is the
+  predicate pin plus the three behavioral tests. Prevents a later reader trusting it for the wrong
+  property.
+- **N72 (scoring-pass deliverable).** Add to the N27/N14/N15 histogram a count of surviving
+  **cross-granularity cross-file** pairs (`ImplBlock↔Method`, `Function↔Closure/Block`) alongside the
+  per-kind counts, so T9's effect is measurable and D5 can be read against a known multiplicity.
+
+**Calibration readiness: GO.** N61 removed *fabricated* signal — a noise floor proportional to
+`impl` count, present with or without real duplication. What remains is **multiplicity around true
+positives** (4× instead of 1×), clustered ~0.96, well above any candidate cut: it cannot move where
+the threshold lands, only inflate raw counts. Sequencing therefore **holds unchanged**:
+**N27/N14/N15 scoring pass (one commit, N55) → T9/T10 (with N68) → D5 → T12 (N59-scoped).** Any
+pre-T9 dogfood count must be labelled inflated near genuine clones.
+
+**Landed with T8b and closed:** N61 (code), N63, N66 (measurement half), N67.
+
+**Open ledger after T8b:** N14/N15/**N27** (scoring pass, next) · N55 (churn) · **N68** (A3, with T9)
+· N70 (with T12) · N71/N72 (with scoring pass) · N64/N65/N69 (record; N65 folded into N68) ·
+N31/N33/N34/N40 (record/T12) · N46 (record) · N59 (rescopes T12) · N60 (record).
