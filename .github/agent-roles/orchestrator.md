@@ -98,6 +98,17 @@ Once Anders and the human complete designing, his output is the items in "Design
 
 Load understanding of the current WIP from `docs/features/<nnn>-<feature_name>.md`.
 
+## Measurement-task conventions (durable)
+
+- **Commit the pre-registration before measuring.** A measurement task's protocol — corpus, pins, sample
+  size, decision rule — is committed in its own change *before* any number is produced; otherwise the
+  ordering is asserted by the record and witnessed by nothing.
+- **Honesty clause on corpus choice.** A corpus picked against a declared criterion is **kept and its
+  misfit reported**, never swapped for one that flatters the result.
+- **A decision rule is set before the labelling it governs, and amended only by the human** — writing or
+  revising it after seeing the curve is fitting. A successor to a contrast-only rule needs an
+  **absolute-precision** term.
+
 # Boundaries
 
 - You are the central coordinator. All agents hand back to you.

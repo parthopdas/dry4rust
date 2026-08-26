@@ -1,6 +1,6 @@
 # Feature: Duplicate Code Detection (TED core, dry4go UX skin)
 **Branch:** vibe/001-duplicate-code-detection
-**Status:** WIP — **S1 DONE**; T11/T8/T8b/T8c/T9/T10 landed, **S2 DONE**. **D5 decided (threshold `0.85`)**, review repairs N87–N98 landed. Next: T12 (N59/N70/N83/N96-scoped) → T14 (third-party corpus) → D5-confirm + T13 (`min_nodes`)
+**Status:** WIP — **S1 DONE**; T11/T8/T8b/T8c/T9/T10 landed, **S2 DONE**. **D5 decided (threshold `0.85`)**, review repairs N87–N98 landed. T12 and T14 measured and reviewed (T14 review notes, N112–N123). Next: **three human decisions — D10** (v1 perf position: document the limit vs run S4 = T15–T18) → **D11** (`min_nodes` default; T13′ executes it) → **D12** (`--exclude <glob>` in v1?)
 
 ## Requirements
 
@@ -64,6 +64,7 @@ A slice is defined in `docs/meta-design.md` — each is independently runnable/v
 | S1 | **Runnable CLI**: discover `.rs` (honor `.gitignore`, skip `/target`) → parse → extract free functions + methods → TED + similarity → threshold/min-lines/min-nodes gate → byte-parity text & json → exit 0. Deterministic output. | - |
 | S2 | Extend extraction to `impl` block bodies, closures, free `{}` blocks; apply containment-dedup policy. | S1 |
 | S3 | Performance & scaling: admissible size-ratio pre-filter + guardrail benchmark; (optional, de-scopable). | S1 (T11); S1+S2 (T12) — see N50(b) |
+| S4 | **Admissible optimisation (T15–T18)** — measure where the 521 365 TED evaluations go, then apply *only* changes that "change speed, never results" (D8): structural-hash memo, label-multiset lower bound, parallel pair loop. Every task carries T9's negative control (dogfood + acceptance output byte-identical). **Whether S4 runs at all is D10, the human's.** | S3; **D10** |
 
 ## Tasks (Tx)
 
@@ -87,22 +88,27 @@ built binary against fixture trees.
 | T10 | S2 | **Integration:** two files each holding one single-method `impl` → pre-dedup 4 findings, post-dedup 1. **Sole end-to-end evidence for N68 (N79)** — the dogfood cannot witness it. | Done | fa83753 |
 | T11 | S3 | Admissible size-ratio pre-filter (`sim ≤ min(n₁,n₂)/max(n₁,n₂)`): prune pairs below `--threshold` before TED — provably never drops a real match. **Unit:** prune-soundness (a would-be match is never pruned). **Landed as `similarity(max−min,min,max) >= threshold` — see N52 restated.** | Done | bb38a40 |
 | T12 | S3 | Perf guardrail benchmark on a medium fixture; document complexity envelope. **Integration/bench.** **N96 — parameterize, do not hardcode:** the envelope is driven by fragment count **F** against an **O(F²)** base rate, and `min_nodes` is what sets F. A 20→35 floor moves F, and the O(F²) pair count with it. Report the curve **as a function of F, with `min_nodes` a stated input** — if T12 pins `min_nodes = 20` and T13 later ships 35, T12's numbers are **void**, the exact failure N77(b) and N84(b) have already inflicted twice. Parameterized, a later floor change **re-parameterizes** T12 along F instead of voiding it — **not** a simple rescale; see the T12 record's *N59/N96 — the curve* section for what the two series do and do not show. Also carries N59/N70/N75/N83, **N84(c)** (pre/post-dedup ratio — T12 already counts TED evaluations), and in its doc pass **N93** and **N86(a)**. | Pending | - |
-| T13 | S2 | **`min_nodes` floor calibration (D5 spin-off).** The **dominant** false-positive class — two unrelated builder setters, two `impl Display` bodies, two arrange/act/assert tests — sits at score **1.0**. *Dominance is attributed to its evidence:* **7 of 17 findings at `0.85` are exact-`1.00` on our own corpus at `6c3d7e6`** (same standing as the `30–40` estimate below — an estimate, not a third-party measurement). **N101 — the class is not merely unreachable at `1.00`, it is dominant just below it too:** §7b's hand-label puts **8 of the 10 survivors in `[0.85, 1.00)`** in the same shape-coincidence class, so the lever is unchanged but the evidence is wider than the exact-`1.00` population alone. **Unreachability (exact):** the gate is `>=`, so **no** threshold in `[0, 1]` — **including `1.0`** — can exclude a δ=0 pair. D5's move to `0.85` removes none of them. **N94 — three levers, not one:** the class exists because **A6 erases** identifiers, literals and types, so (i) raise `min_nodes`, (ii) raise `min_lines`, (iii) partially de-erase A6. **(iii) is REJECTED on the record:** it changes the meaning of `score` and is a breaking output change under **R3**, and it re-opens the A2/A6 label-model commitment — the very thing R3 freezes. (ii) is weaker than (i) because line count is formatting-sensitive where node count is not. **(i) is the cheapest of three, not the only cure.** Estimate: `min_nodes` should be **30–40**, not 20. **Reframes N72:** closures dying 88% at the floor is not evidence the floor is brutal, it is evidence closures sit below the information threshold where "same shape" means anything. **N95 — this row may close a decision, not just move a number:** at `30–40` the closure population (already **88% annihilated at 20**) goes to ~zero and free `{}` blocks are already **0 extracted**, so EXTENDED's two weakest granularities become dead weight — **D7 stops being a de-scope lever and becomes a cleanup**, and **A1 may need amending**. Sequence T13 knowing it can **close D7 and amend A1**. **N100 — the estimate now has one measurement against it:** on §7b's own ten survivors the `min(left,right)` node counts are `20,39,39,20,20,20,26,24,31,26` (§7c); the eight coincidences span **20–39** and the sole actionable finding sits at **26, inside them**, so a `30–40` floor takes the band from 10% actionable to **0%** and still leaves **3 of the 7 exact-`1.00` findings** alive at `30` and `35` (**1** even at `40`; the gate is `>=`, so the class does not empty until **42**). The cost is qualified: the finding it removes is #7, actionable **as a location pair** but **weakly attributed** (→ R8). §7c's projected survivor sets were confirmed against real `--min-nodes` runs on the pinned corpus, so they are exact for that run. Self-corpus, N=10 — this **contests** `30–40` rather than refuting it (a categorical rejection would overstate the sample), but T13 must move the estimate or explain the sample away. **N101 — observation feeding T13 and T14, deciding nothing now:** the dominant noise carrier in this sample is not fragment *size* but **test/harness code** — 8 of §7b's 10 survivors and most of §7's 11 drops. Test functions are node-rich (§7c: the test pairs sit at 31–39, above the estimated floor), so a 35-node floor plausibly does **not** kill a 10-line arrange/act/assert test and T13's lever may miss the population N88 found. Three options, **none chosen**: (a) nothing — users pass paths; (b) a documented "point it at `src/`, not `tests/`" recipe; (c) a `--exclude` glob or `#[cfg(test)]` skip — **new surface, YAGNI-suspicious in v1**. §7c's column is what tells us whether the floor covers this population at all. Same evidence burden as D5 (N78/N84): needs a third-party corpus → blocks on **T14**. | Pending | - |
-| T14 | S3 | **Acquire and pin a third-party corpus harness.** **One artifact, four consumers:** D5-confirmation, **N78**, **N84(a,d,e)** and **T13** all block on it, and it has been deferred at every gate so far. Deliverable: a named crate + **pinned `(corpus, sha, full flag set)`** per N90, plus §8's **hand-label** and **zero-labelling** protocols written down as runnable recipes (sample size, band, the "would I factor these out?" rubric, the per-KLOC cross-crate histogram at `≥0.75` / `≥0.85` / `=1.00`). **N102 — three protocol edits inside that deliverable, and they change what the labelling can conclude.** (1) **Sample across scores, not at one threshold:** N per bucket in `[0.75,0.85)`, `[0.85,0.95)`, `[0.95,1.00)` and **`=1.00`**, reporting precision **per bucket**. A precision-vs-score curve is the only thing that can *locate* a line; a single number can only be *consistent with* one — and the observed `(0.81, 0.86)` gap is **empty**, so the single-threshold label had no resolution to give. T14 must therefore also emit the **full score histogram** of the un-sampled run, to test whether that gap is a small-N artifact. (2) **The `=1.00` bucket is mandatory and is the actual hole in the record:** T13's central claim rests on **7 findings nobody has ever hand-labelled** — §7 labelled the 11 dropped, §7b the 10 survivors, and the seven exact-`1.00` were never read. (3) **Pre-register the decision rule before labelling,** replacing §8's single `<50%` criterion with a statement about the *contrast between adjacent buckets* and about where precision crosses §4's cost asymmetry. Writing that rule after seeing the curve is **fitting**, and must be called that. (4) **Third label column — `attributed`:** does the tool's evidence match the human's reason (**R8**)? Report precision two ways, *actionable* and *actionable-and-attributed*. On §7b's own data the strict number is **0 of 10**, and that is the honest headline: without this column a detector that finds the right pairs for the wrong reasons is indistinguishable from one that works. (5) **Zero-labelling protocol: keep as written, and do not add the third column** — attribution is undefined when every hit is non-actionable by construction. Add one axis instead: bucket the cross-crate histogram **by node count as well as score**, which prices T13's floor against the coincidence null mechanically, with no human in the loop. Without T14, S3 closes with four "still owed" items and **no mechanism that will ever discharge them**. **N107 — three acceptance criteria, stated as criteria and not aspirations; T14 is not done until each has an answer on the record.** (1) **F per kLOC on real code, as a function of `min_nodes`** — the gap nobody had named: the envelope is parameterized in **F** (T12) while every user has **LOC**, so without the F/kLOC constant `Θ(F²)` is unusable as a user-facing statement and we cannot answer *"how long on my 80 kLOC crate?"*. Our single data point (134 fragments for `src`, *T12 record, N84(c)*) is an **anecdote, not a measurement**. (2) **End-to-end wall-clock at a named scale target against a stated budget.** **The budget number is a product decision reserved to the human and is NOT yet decided — it is recorded here as OPEN and must not be invented.** Proposed *form* (Anders): one crate in the class of `syn` / `regex` / `ripgrep`, **default flags**, **best-of-3**, developer machine; the number is **TBD**. The reason it is a criterion at all: **without a stated budget no measurement can ever be a pass or a fail**, and R1 stays open by construction. (3) **The joint `(node count, depth)` distribution of *admitted* fragments** — one histogram, which also discharges **D9**'s trigger. **N108 — corpus selection is pre-registered in this row, before any crate is picked.** Same reason as N102(3): choosing a corpus *after* seeing which one flatters dedup is **fitting — the same error wearing a different hat**. The criterion is **coverage of the architecture's cost-bearing shapes**, declared up front, with results reported whatever they turn out to be: **≥1 crate with many small `impl` blocks** (the close-sized nested wrapper case — N83's "tight where it hurts"); **≥1 trait-heavy crate**, which is also the first real chance at **A1**/N86(a)'s revisit trigger, unreachable on our trait-poor corpus; **≥1 crate containing generated code**, the only realistic source of the depth N70 needed a synthetic adversary to produce — it feeds N107(3) and D9's trigger. **Context (recorded, not a task):** N78's zero cross-granularity survivors, N79's bit-identical negative control and N84(c)'s 17-pre = 17-post are three independent observations with **one cause — our corpus contains no nested clone site**. Dedup does nothing because there is nothing to do, and its cost when idle is zero. **This is not a signal about dedup and T9 is not reopened:** removing it would produce the four-findings-per-clone-site output that is self-evidently wrong, and T10 plus the `d = 3` 5:1 fixture both witness the mechanism. The sharp consequence is about *evidence*, not design: **the pipeline's output has never been observed on the class of code where the architecture pays its `d²` cost** — every witness so far is one we constructed. **Counter-outcome, pre-written:** if pre/post-dedup comes back **1.00 across several real crates too**, that is a **genuine finding and goes on record** — it would say dedup's value is concentrated at nested and generated sites. That is a post-v1 revisit note, **still not a removal**. | Pending | - |
+| T13 | S2 | **SPLIT at the T14 review (N118) — this row is now evidence-only and decides nothing.** The *decision* moved to **D11** (`min_nodes` default for v1 — the human's, blocked on D10); the *execution* moved to **T13′**. Everything below is the evidence trail that produced D11 and is retained unchanged; read D11 for the ruling. **`min_nodes` floor calibration (D5 spin-off).** The **dominant** false-positive class — two unrelated builder setters, two `impl Display` bodies, two arrange/act/assert tests — sits at score **1.0**. *Dominance is attributed to its evidence:* **7 of 17 findings at `0.85` are exact-`1.00` on our own corpus at `6c3d7e6`** (same standing as the `30–40` estimate below — an estimate, not a third-party measurement). **N101 — the class is not merely unreachable at `1.00`, it is dominant just below it too:** §7b's hand-label puts **8 of the 10 survivors in `[0.85, 1.00)`** in the same shape-coincidence class, so the lever is unchanged but the evidence is wider than the exact-`1.00` population alone. **Unreachability (exact):** the gate is `>=`, so **no** threshold in `[0, 1]` — **including `1.0`** — can exclude a δ=0 pair. D5's move to `0.85` removes none of them. **N94 — three levers, not one:** the class exists because **A6 erases** identifiers, literals and types, so (i) raise `min_nodes`, (ii) raise `min_lines`, (iii) partially de-erase A6. **(iii) is REJECTED on the record:** it changes the meaning of `score` and is a breaking output change under **R3**, and it re-opens the A2/A6 label-model commitment — the very thing R3 freezes. (ii) is weaker than (i) because line count is formatting-sensitive where node count is not. **(i) is the cheapest of three, not the only cure.** Estimate: `min_nodes` should be **30–40**, not 20. **Reframes N72:** closures dying 88% at the floor is not evidence the floor is brutal, it is evidence closures sit below the information threshold where "same shape" means anything. **N95 — this row may close a decision, not just move a number:** at `30–40` the closure population (already **88% annihilated at 20**) goes to ~zero and free `{}` blocks are already **0 extracted**, so EXTENDED's two weakest granularities become dead weight — **D7 stops being a de-scope lever and becomes a cleanup**, and **A1 may need amending**. Sequence T13 knowing it can **close D7 and amend A1**. **N100 — the estimate now has one measurement against it:** on §7b's own ten survivors the `min(left,right)` node counts are `20,39,39,20,20,20,26,24,31,26` (§7c); the eight coincidences span **20–39** and the sole actionable finding sits at **26, inside them**, so a `30–40` floor takes the band from 10% actionable to **0%** and still leaves **3 of the 7 exact-`1.00` findings** alive at `30` and `35` (**1** even at `40`; the gate is `>=`, so the class does not empty until **42**). The cost is qualified: the finding it removes is #7, actionable **as a location pair** but **weakly attributed** (→ R8). §7c's projected survivor sets were confirmed against real `--min-nodes` runs on the pinned corpus, so they are exact for that run. Self-corpus, N=10 — this **contests** `30–40` rather than refuting it (a categorical rejection would overstate the sample), but T13 must move the estimate or explain the sample away. **N101 — observation feeding T13 and T14, deciding nothing now:** the dominant noise carrier in this sample is not fragment *size* but **test/harness code** — 8 of §7b's 10 survivors and most of §7's 11 drops. Test functions are node-rich (§7c: the test pairs sit at 31–39, above the estimated floor), so a 35-node floor plausibly does **not** kill a 10-line arrange/act/assert test and T13's lever may miss the population N88 found. Three options, **none chosen**: (a) nothing — users pass paths; (b) a documented "point it at `src/`, not `tests/`" recipe; (c) a `--exclude` glob or `#[cfg(test)]` skip — **new surface, YAGNI-suspicious in v1** (**superseded by D12 (N117): the YAGNI objection is withdrawn on measured evidence — `--exclude <glob>` is proposed IN, `#[cfg(test)]` skipping stays OUT**). §7c's column is what tells us whether the floor covers this population at all. Same evidence burden as D5 (N78/N84): needs a third-party corpus → blocks on **T14**. **T14 delivered it (record §5d/§6/§1); the ruling is D11's.** | Split (N118) → **D11** + **T13′** | - |
+| T13′ | S2 | **Execute D11's ruling on the `min_nodes` default.** No evidence-gathering: D11 is decided by the human on T14's record, and T13′ only lands it. **Carries N95's consequences conditionally, and the conditionality is the point.** *If D11 raises the floor to ≥30:* the closure population — already **88% annihilated at 20** (N72) — goes to ~zero and free `{}` blocks are already **0 extracted**, so EXTENDED's two weakest granularities become dead weight; **D7 stops being a de-scope lever and becomes a cleanup**, and **A1 may need amending**. *If D11 holds at 20 (Anders' recommendation):* **T13′ is a no-op and D7/A1 are untouched** — no cleanup, no amendment, nothing to write. Whichever way it goes, T13′ ships the number and its consequences in one change, with T9's negative control on the dogfood output. | TODO — blocked on **D11** | - |
+| T14 | S3 | **Acquire and pin a third-party corpus harness.** **One artifact, four consumers:** D5-confirmation, **N78**, **N84(a,d,e)** and **T13** all block on it, and it has been deferred at every gate so far. Deliverable: a named crate + **pinned `(corpus, sha, full flag set)`** per N90, plus §8's **hand-label** and **zero-labelling** protocols written down as runnable recipes (sample size, band, the "would I factor these out?" rubric, the per-KLOC cross-crate histogram at `≥0.75` / `≥0.85` / `=1.00`). **N102 — three protocol edits inside that deliverable, and they change what the labelling can conclude.** (1) **Sample across scores, not at one threshold:** N per bucket in `[0.75,0.85)`, `[0.85,0.95)`, `[0.95,1.00)` and **`=1.00`**, reporting precision **per bucket**. A precision-vs-score curve is the only thing that can *locate* a line; a single number can only be *consistent with* one — and the observed `(0.81, 0.86)` gap is **empty**, so the single-threshold label had no resolution to give. T14 must therefore also emit the **full score histogram** of the un-sampled run, to test whether that gap is a small-N artifact. (2) **The `=1.00` bucket is mandatory and is the actual hole in the record:** T13's central claim rests on **7 findings nobody has ever hand-labelled** — §7 labelled the 11 dropped, §7b the 10 survivors, and the seven exact-`1.00` were never read. (3) **Pre-register the decision rule before labelling,** replacing §8's single `<50%` criterion with a statement about the *contrast between adjacent buckets* and about where precision crosses §4's cost asymmetry. Writing that rule after seeing the curve is **fitting**, and must be called that. (4) **Third label column — `attributed`:** does the tool's evidence match the human's reason (**R8**)? Report precision two ways, *actionable* and *actionable-and-attributed*. On §7b's own data the strict number is **0 of 10**, and that is the honest headline: without this column a detector that finds the right pairs for the wrong reasons is indistinguishable from one that works. (5) **Zero-labelling protocol: keep as written, and do not add the third column** — attribution is undefined when every hit is non-actionable by construction. Add one axis instead: bucket the cross-crate histogram **by node count as well as score**, which prices T13's floor against the coincidence null mechanically, with no human in the loop. Without T14, S3 closes with four "still owed" items and **no mechanism that will ever discharge them**. **N107 — three acceptance criteria, stated as criteria and not aspirations; T14 is not done until each has an answer on the record.** (1) **F per kLOC on real code, as a function of `min_nodes`** — the gap nobody had named: the envelope is parameterized in **F** (T12) while every user has **LOC**, so without the F/kLOC constant `Θ(F²)` is unusable as a user-facing statement and we cannot answer *"how long on my 80 kLOC crate?"*. Our single data point (134 fragments for `src`, *T12 record, N84(c)*) is an **anecdote, not a measurement**. **OUTCOME AT T14 — there is no constant** (§1: 10.56 / 27.05 / 43.38 F/kLOC, a 4.11× spread that `Θ(F²)` squares into ~17×), which is now **A10** (N114) and is what `docs/design.md`'s Performance section states. (2) **End-to-end wall-clock at a named scale target against a stated budget.** **The budget number is a product decision reserved to the human. It was recorded here as OPEN and was not invented; it is now **SET at 10 s** by the human (T14 record §0.1 — provenance, and the 30 s / 60 s alternatives he rejected).** Proposed *form* (Anders): one crate in the class of `syn` / `regex` / `ripgrep`, **default flags**, **best-of-3**, developer machine. The reason it is a criterion at all: **without a stated budget no measurement can ever be a pass or a fail**, and R1 stays open by construction. (3) **The joint `(node count, depth)` distribution of *admitted* fragments** — one histogram, which also discharges **D9**'s trigger. **N108 — corpus selection is pre-registered in this row, before any crate is picked.** Same reason as N102(3): choosing a corpus *after* seeing which one flatters dedup is **fitting — the same error wearing a different hat**. The criterion is **coverage of the architecture's cost-bearing shapes**, declared up front, with results reported whatever they turn out to be: **≥1 crate with many small `impl` blocks** (the close-sized nested wrapper case — N83's "tight where it hurts"); **≥1 trait-heavy crate**, which is also the first real chance at **A1**/N86(a)'s revisit trigger, unreachable on our trait-poor corpus; **≥1 crate containing generated code**, the only realistic source of the depth N70 needed a synthetic adversary to produce — it feeds N107(3) and D9's trigger. **Context (recorded, not a task):** N78's zero cross-granularity survivors, N79's bit-identical negative control and N84(c)'s 17-pre = 17-post are three independent observations with **one cause — our corpus contains no nested clone site**. Dedup does nothing because there is nothing to do, and its cost when idle is zero. **This is not a signal about dedup and T9 is not reopened:** removing it would produce the four-findings-per-clone-site output that is self-evidently wrong, and T10 plus the `d = 3` 5:1 fixture both witness the mechanism. The sharp consequence is about *evidence*, not design: **the pipeline's output had never been observed on the class of code where the architecture pays its `d²` cost** — every witness up to T12 was one we constructed. **Observed at T14** on three pinned third-party crates (record §4): dedup removes 37–66% of raw candidates there. **Counter-outcome, pre-written:** if pre/post-dedup comes back **1.00 across several real crates too**, that is a **genuine finding and goes on record** — it would say dedup's value is concentrated at nested and generated sites. That is a post-v1 revisit note, **still not a removal**. **OUTCOME AT T14 — the counter-outcome did NOT occur:** pre/post-dedup on third-party code is **1.97× / 1.58× / 2.90×** (T14 record §4), so **N84(c) closes affirmatively**, `17-pre = 17-post` is confirmed as a property of *our own fixture corpus* only, and the post-v1 revisit note is **not** created. **OUTCOME — D5-confirm is PARTIAL, and the record says so in its headline (T14 record §5c):** the pre-registered rule **fired** for `0.85`, but on `n = 8` per bucket from one crate labelled by one non-maintainer AI, a contrast **two pairs** wide that clears the 20 pp bar by only **5.0 pp** and that **one relabel (12.5 pp) would unfire** — row 7 `No → Yes` in `[0.75,0.85)`, or any one of rows 9/10/11/16 `Yes → Borderline/No` in `[0.85,0.95)`. **Row 7 is a † (deliberated) row tallied `No` and is individually decisive**; the other four † rows do not steer the rule (record §5c). *Rule fired*, **not** *threshold shown to separate*. The mechanical zero-labelling null (0 cross-crate hits per kLOC at `≥0.85`) is the stronger leg. **R2 stands.** | Pending | - |
+| T15 | S4 | **Measurement only — no pipeline change, no result change.** On the same pins as T14 (`../_t14-corpus`, same shas, default flags), instrument the pair loop and count three things. **(a) How many *distinct* `(structural-hash, structural-hash)` pairs** are among `syn`'s **521 365** TED evaluations. If that number is ~50k, **memoisation alone is the 10×** and T16 is the whole answer. **(b) How many pairs a label-multiset lower bound would prune** — the yield of T17, before writing T17. **(c) What fraction of total TED time is spent on pairs touching D9's deep-and-large quadrant** (the 9 `syn` fragments at ≥100 nodes and depth ≥20, up to 36 pairs among themselves). **(c) is D9's missing number** — occupancy is not cost (N119) — and it costs no extra task because it is the same instrumentation. Output is a printed report, exactly like `tests/corpus.rs`; the shipped pipeline is untouched, so there is nothing for T9's negative control to catch. | TODO — blocked on **D10** | - |
+| T16 | S4 | **Structural-hash memo.** Cache TED results by `(hash_left, hash_right)` over the normalized trees' structural hashes, collapsing each equivalence-class pair to **one** computation. Pure, **std-only `HashMap`**, no new dependency; **determinism untouched — a cache never orders output**. **Gated on T15(a)** (if the distinct-pair count is not far below 521 365 there is no win to take). **Negative control (T9's):** dogfood **and** the T14 acceptance outputs must be **byte-identical** before and after. | TODO — blocked on **D10**, gated on **T15** | - |
+| T17 | S4 | **Label-multiset lower bound.** Prune a pair pre-TED when the symmetric difference of the two trees' label multisets already exceeds the δ the threshold allows. **Same standing as T11** — provably never prunes a real match, and it ships **the same prune-soundness unit test**. **Unknown yield**, and that is why it is measured first: the size-ratio filter already killed 79% of `syn`'s pairs and the survivors genuinely are similar. **Gated on T15(b).** **Negative control (T9's): byte-identical output.** | TODO — blocked on **D10**, gated on **T15** | - |
+| T18 | S4 | **`rayon` over the pair loop.** Parallelise the `Θ(F²)` loop, collect, then sort by the existing canonical key so output order is unchanged. **Deliberately last of the three**, and the ordering is a position, not an accident: it is the one lever that **always works** (6–12× on a developer box) but also the only one that **touches architecture** — a third-party crate at/near core, against A5's "core is pure std-only" — and a parallel 10× would **mask whether the algorithmic work paid**. **Negative control (T9's): byte-identical output**, which for this task is also the determinism test (A7/R6). | TODO — blocked on **D10**, gated on **T15** | - |
 
 ## Risks (Rx)
 
 - **R1 (perf):** O(n²) pairs × super-quadratic TED (APTED ~O(n³) worst) → slow on large repos. Mitigate:
   `min-nodes` floor, size-ratio pre-filter (S3), size bucketing; keep TED confined so it's swappable.
-  **Status after T12 (N106): mitigated and characterized, not discharged — it ships open.** T12 supplied
-  the exponent, the pre-filter's true value (a constant, not an asymptotic win) and a shape-dominated
-  tail; all three are stated once in the *T12 measurement record* and are not restated here. What T12
-  **cannot** supply is any constant for real code — its corpora are synthetic and its one real-corpus
-  point is our own tree. Mitigate onward: **T14**'s acceptance criteria (N107) are what would close it —
-  F per kLOC as a function of `min_nodes`, an end-to-end wall-clock against a **stated budget (OPEN, the
-  human's to set)**, and the `(nodes, depth)` distribution of admitted fragments. **S3 closes with R1
-  carried forward as an accepted, characterized, triggered risk**, which is the honest state and a fine
-  one to ship v1 in.
+  **Status after the T14 review (N112): CLOSED as a risk.** The measured envelope is no longer an
+  uncertainty — it is a **documented limit, i.e. a specification**. `Θ(F²)` was reproduced, F/kLOC was
+  measured on three ordinary crates, the budget was stated by the human, and the breach was measured
+  **twice** in two independent sessions. Everything a risk register can ask of R1 has been answered;
+  what remains is a known, quoted operating envelope, not a thing that might turn out badly.
+  **Stated once, at T14 record §2** (the 10 s budget, the 103.878 s / 66.618 s scale-target FAIL and the
+  exclusion measurement) **and at A10** (the F/kLOC bridge and why any user-facing runtime statement is
+  a range); neither is restated here. What to *do* about that limit in v1 is a product decision, not a
+  risk — see **D10**. **The tail is not R1's** — a single pair's shape-driven cost lives in **R9**.
 - **R2 (calibration):** `0.85` (D5) is a **reasoned estimate, not a measurement** — precision/recall are
   still unvalidated on a third-party corpus (N78/N84 stand). Mitigate: `--threshold` is exposed; D5
   records the cheapest decisive test and the revisit trigger.
@@ -132,6 +138,16 @@ built binary against fixture trees.
   `min_lines` floors do **not** address it — they change *which* fragments are scored, not *what* the
   score is evidence of — and the only lever that would, partial de-erasure of A6 (N94 (iii)), is
   **rejected under R3**.
+- **R10 (non-actionable by construction, N113):** on a generated-code-heavy target the tool's output is
+  dominated by findings **no user can ever act on**. Measured on the scale target (T14 record §4b):
+  **90.7%** of `syn`'s 6 616 findings and **93.7%** of its 3 432 exact-`1.00` findings are
+  **generated↔generated**. The duplication is real and the score is correct — **the generator wrote it**,
+  and no local edit removes it. This class is **unreachable by threshold, by floor, and by the label
+  model**: it is not a calibration error, so **calibration can never fix a finding that is non-actionable
+  by construction**. It sits **beside R8**, at the same standing and for the same reason — R8 is *right
+  pair, wrong evidence*; R10 is *right pair, right evidence, nothing a user can do*. **Mitigate:** path
+  exclusion — **D12**'s `--exclude <glob>` — plus a documented recipe for pointing the tool at
+  hand-written code. Floors and thresholds are **not** mitigations for it and must not be quoted as such.
 - **R9 (shape-dominated per-pair cost, N103):** per-pair TED cost is driven by tree **shape** —
   `min(depth, leaves)` on each side — as well as by node count, so two pairs with the *same* node counts
   can differ enormously in price: **≈39× conservatively, up to ~95× observed** (measured at the ceiling
@@ -144,7 +160,11 @@ built binary against fixture trees.
   document it** — `docs/design.md`'s Performance section and the `MAX_NODES` doc comment in `cli.rs`
   (both number-free of thresholds). A **shape-aware ceiling is the correct instrument and is deferred to
   D9**. The measurement owed against it is **T14**'s `(node count, depth)` histogram of admitted
-  fragments (N107(3)).
+  fragments (N107(3)). **Priced against the budget at the T14 review (N112): the tail is R9's, not
+  R1's.** One **1 043-node nested fragment** cost **7.614 s – 17.478 s for a single TED evaluation on a
+  single pair** across two sessions (T14 record §3/§8) — i.e. that one pair **straddles the entire 10 s
+  budget**, under it in one session and 1.7× over it in the other. So R9's ≈39×/~95× ratio is no longer
+  only a ratio: at the sizes the ceiling admits, it is budget-scale in absolute terms.
 
 ## Assumptions (Ax)
 
@@ -245,6 +265,18 @@ built binary against fixture trees.
 - **A8:** Pure reporter — always exit 0 on a successful run; non-zero reserved for usage/internal errors.
 - **A9:** `--min-lines 4` and `--min-nodes 20` retained from dry4go (structural floors are algorithm-
   agnostic, so parity here is honest).
+- **A10 (the envelope has no per-LOC constant, N114):** the performance envelope is parameterised in
+  fragment count **F**; every user has **LOC**. There is **no constant** bridging them. Measured on three
+  ordinary crates at the shipped floors (T14 record §1): **10.56 / 27.05 / 43.38 F/kLOC** — a **4.11×**
+  spread, which `Θ(F²)` squares into a **~17×** spread in predicted cost. Two consequences are binding:
+  1. **Any user-facing runtime statement must be a range**, never a single number or a single constant.
+  2. **What places a crate within that range is generated-code density.** The bottom of the range is a
+     hand-written crate whose fragments mostly fall under the floor; the top is a crate that is ~47%
+     machine-generated. (`serde_core`, chosen for *many small `impl` blocks*, sits at the bottom — a
+     misfit against its own N108 criterion, kept and reported, not swapped.)
+
+  This is why **R1 is a documented limit and not an open risk**, and it is what `docs/design.md`'s
+  Performance section now states (number-free of thresholds, LOC-bridged).
 
 ## Deferrals (Dx)
 
@@ -263,7 +295,9 @@ built binary against fixture trees.
   *admissible* optimization, deferring it changes only speed, never results.
 - **D9:** Shape-aware oversized-fragment ceiling — **deferred; the flat `max_nodes = 2000` ceiling stays
   unchanged in v1.** This is a **ruled decision, not an open question** (the human ruled at the T12
-  review; `cli.rs`'s doc comment records it beside the constant).
+  review; `cli.rs`'s doc comment records it beside the constant). **Re-opened at the T14 review as a
+  *decision* blocked on T15(c) (N119) — the v1 ceiling value is unchanged either way; see the
+  trigger-status bullets below.**
   - **Why no lower flat value works.** Per-pair cost is `n₁·n₂·min(d,l)₁·min(d,l)₂`, and in the
     adversarial family depth scales *with* n (42 nested `if`s is `d ≈ n/47`), so cost there grows like
     **n⁴, not n²**. Taking the fastest nested measurement (`50.9 s` at 1 983 nodes — *T12 record, N70*)
@@ -275,7 +309,10 @@ built binary against fixture trees.
     ceiling — *N70*). Bad trade in both directions, and picking a number from our own tree would repeat
     the **D5/T13** error of setting a user-visible number from self-corpus evidence.
   - **Shape-aware is the *correct* instrument** — it prices the axis that actually costs (**R9**) — but
-    **depth is not computed anywhere today** (`tree.rs` carries `node_count` and nothing else), it would
+    **depth was not computed anywhere when this was ruled** (`tree.rs` carried `node_count` and nothing
+    else; **T14 added `NormTree::depth` as an unrendered run statistic for N107(3) — measurement only,
+    nothing filters on it, and the v1 ceiling is unchanged by it; the "not computed" objection is
+    RESOLVED, see the trigger-status bullets and N119**), it would
     add a second invisible, untunable drop rule with its own diagnostic, and **one adversarial fixture
     does not justify it**. **YAGNI in v1.**
   - **Any time- or budget-based cutoff is foreclosed outright**, and is written down here so nobody
@@ -284,12 +321,82 @@ built binary against fixture trees.
     rule all forbid it.
   - **Trigger:** T14's `(node count, depth)` histogram (N107(3)) showing real admitted fragments in the
     **deep-and-large quadrant**, or a user report of a single pair costing minutes.
+  - **Trigger status: MET (T14 record §3) — 9 fragments, depth 35, real third-party code.**
+    **Ruling at the T14 review (N119): D9 does not enter v1 on this evidence, and does not stay quietly
+    deferred either — it RE-OPENS as a decision, blocked on T15(c).** Of D9's three original objections:
+    *"depth was not computed"* is **RESOLVED** (`NormTree::depth()` ships as an unrendered statistic, so
+    the instrument is now free); *"a second invisible, untunable drop rule with its own diagnostic"*
+    **stands, unchanged**; *"one adversarial fixture does not justify it"* is **partially answered** —
+    real code does reach the quadrant, but at **9 of 2 245 (0.4%) on one crate and 0 of ~550 across the
+    other two**, at depth **35** against the synthetic **85**.
+  - **The decisive gap: occupancy is not cost.** The record establishes that the quadrant is *occupied*;
+    it does **not** establish that those 9 fragments cost anything measurable. Per-pair cost is
+    `n₁·n₂·min(d,l)₁·min(d,l)₂`, and the 9 are mutually size-compatible enough to survive the size-ratio
+    pre-filter, so they generate **up to 36 pairs among themselves**. If that handful is ~20 s of the
+    104 s, a shape-aware ceiling is simultaneously D9's answer **and** a 20% performance win. If it is
+    0.5 s, D9 **stays deferred** and we have learned something more important: the cost is **broad**
+    (521 365 ordinary evaluations), reachable only by **memoisation, pruning or parallelism** — S4's
+    levers, not a ceiling. That number is **T15(c)**, same instrumentation, no extra task.
+  - **Structural point, true regardless of the number: a shape-aware ceiling is NOT admissible under
+    D8.** It **drops fragments**, so it changes *results*, not only speed — which puts it under the
+    **D5/T13 evidentiary standard**, where a user-visible drop rule may not be set from self-corpus or
+    one-crate evidence. We have three crates and **only one occupies the quadrant**. Setting the rule
+    from that basis is the exact error D9's own text warns against. So even if T15(c) comes back
+    attractive, the number justifies a **targeted optimisation** (S4), **not** a drop rule.
   - **What N70 did and did not establish.** It measured **one point, not a curve**: the nested family was
     timed at the ceiling only, so the **exponent in that family is unknown** — which is why the n²/n⁴
     pair above is a bracket and why **no replacement number is named**. The missing measurement is cheap
     (nested-shape cost at ~500 / ~1 000 / ~2 000 nodes; the generator already takes node count as a
     parameter, so it is minutes of runtime) and is recorded as **optional and non-blocking**, to be
-    folded into **T14**'s harness rather than reopening T12.
+    folded into **T14**'s harness rather than reopening T12. **Run at T14** (record §8, two usable
+    points) — it does not revise the ceiling, and the exponent still is not pinned.
+- **D10 — the v1 performance position. HUMAN DECISION, open (N115).** R1 is now a documented limit
+  (measured, breached twice), so the remaining question is not *what is the cost* but *what do we ship*.
+  Two options, as Anders framed them:
+  - **(a)** ship v1 with the limit documented — the envelope, the range, and "point it at `src/`";
+  - **(b)** take **one admissible optimisation slice** — **S4 = T15–T18** — and re-measure.
+
+  **Anders' recommendation: (b), with the 10 s budget left exactly where the human set it.** His
+  reasoning, recorded in substance: **51.8 kLOC is a mid-size library, not a large one.** Extrapolating
+  `Θ(F²)` to a 200 kLOC workspace at *middle* fragment density gives ~**2.4×** F ⇒ ~**5.8×** pairs ⇒
+  **6–10 minutes**. **That figure is an extrapolation, not a measurement**, and is labelled as one
+  wherever it is quoted — but it is the honest reading of the curve we did measure, and it makes
+  "documented limit, ship it" read as *unusable on exactly the codebases most in need of a duplicate
+  detector*. **D8 already licenses this work**: an admissible optimisation "changes only speed, never
+  results", so S4 needs no new architectural permission — only sequencing. This decision **blocks D11**.
+- **D11 — the default `min_nodes` for v1. HUMAN DECISION, open, BLOCKED ON D10 (N116).** This is the
+  *decision* half of the old T13; the *execution* half is **T13′**. **The evidence is complete** — T14
+  §5d (the floor removes 64% of actionable findings and separates only weakly by node count — per
+  §6/N118, **weak separation in the desired direction, bought at that 64% actionable-recall loss**;
+  the arithmetic is recomputed there, not here), §6 (the
+  coincidence mass lives at the floor), §1/§2 (the floor is the cheapest lever on a cost that is over
+  budget). **More labelling at n = 8 will not move it**; another eight pairs cannot resolve a
+  two-pair-wide contrast. **Anders' recommendation: hold at 20 for v1**, on the principle that **you pay
+  a cost problem with cost levers, not with a semantics lever** — `min_nodes` decides *what the tool
+  means by a fragment worth comparing*, and raising it to buy runtime spends precision to pay for speed.
+  `--min-nodes` is already exposed, so a user on a large crate can make that trade for themselves.
+  Blocked on D10 because if S4 lands an admissible speed-up, the cost argument for raising the floor
+  disappears entirely.
+- **D12 — does `--exclude <glob>` enter v1 scope? HUMAN DECISION, open (N117).** **Anders withdraws the
+  YAGNI objection he raised at N101(c)**, and states why: **YAGNI forbids building for a *speculated*
+  need; this one is *measured*** (R10 / T14 §4b — 90.7% of the scale target's output is non-actionable by
+  construction). His scope split, recorded precisely:
+  1. **`--exclude <glob>`: IN.** It lives **entirely in the `discovery` adapter**; the `ignore` crate
+     already ships `OverrideBuilder`, so there is **no new dependency, no core change, no score change
+     and no output-format change**, and therefore **no R3 exposure**. Determinism holds because the
+     match runs over the already-`/`-normalized paths (A7).
+  2. **`#[cfg(test)]` skipping: OUT — stays deferred.** Different layer (**parse**, not discovery), and
+     **N84(d) has no third-party measurement behind it** (T14 §7 could not deliver it). **Do not bundle
+     an unmeasured feature with a measured one.**
+  3. **Auto-detecting `@generated` banners: REJECTED for v1.** A heuristic over a *comment convention*,
+     ecosystem-dependent, and a **silent drop rule** — the same objection as D9's.
+
+  **The "a workaround already exists" argument is disproved on the record, not merely doubted:** T14
+  §2's own mitigation command **lists 48 files on a single command line**. That is evidence the current
+  surface is inadequate, not a hypothesis about it. Riders: `--exclude` is a **findings-quality lever,
+  not a performance fix** (§2 — removing 47% of the input removed 95.7% of findings and only 58% of the
+  time); it ships **with a docs recipe**; and excluding `gen/**` moves `syn` from the **43** end of
+  A10's F/kLOC range toward the **~11** end, which makes A10's range *more* useful, not less.
 
 ## Notes & Decisions
 
@@ -1157,6 +1264,7 @@ self-corpus weight as the rest of §7b — an addendum, not a promotion:** ten p
 test-heavy corpus. It cannot settle `30–40`. What it does do is remove `30–40`'s status as
 *unopposed*: the one cheap check available now points the other way, so **T13 must either move the
 estimate or explain this sample away**, and T14's data is what will decide. Not equivocal, but small.
+(**T14 decided it — §5d reproduces N100 on third-party code; the ruling is **D11**'s, N116/N118.**)
 
 #### 8. What is still owed (N78/N84 stand) — the cheapest decisive test
 
@@ -1234,7 +1342,9 @@ it argues for raising the floor, not lowering it.
 produce nothing, so **D7 stops being a de-scope lever and becomes a cleanup**, and **A1 may need
 amending** to drop them. Sequence T13 accordingly: it is a task that can **close D7 and amend A1**.
 
-Tracked as **T13 (Pending)**; `min_nodes` is unchanged at `20`.
+Tracked as **T13 (Pending)**; `min_nodes` is unchanged at `20`. (**At the T14 review T13 SPLIT: the
+decision is **D11**, the execution is **T13′**, and N95's consequences are carried *conditionally* —
+if D11 holds at 20, T13′ is a no-op and D7/A1 are untouched. N118.**)
 
 **Ledger:** N78/N84(a,b,d,e) **stand — still owed**; N84(c) → T12; N86(a) remains open (unrelated to
 the threshold). New: **T13**, **T14**.
@@ -1299,7 +1409,9 @@ kept here so the note ledger stays in one place.
   here is **test/harness code**, not fragment size, and test functions are node-rich (§7c puts them at
   31–39), so T13's floor plausibly misses the very population N88 found. Options (a) nothing /
   (b) a documented "point it at `src/`" recipe / (c) `--exclude` or a `#[cfg(test)]` skip — recorded,
-  **none chosen**; (c) is flagged new surface and YAGNI-suspicious in v1.
+  **none chosen**; (c) is flagged new surface and YAGNI-suspicious in v1. (**Superseded at the T14
+  review — D12/N117: Anders withdraws the YAGNI objection on measured evidence; `--exclude <glob>` is
+  proposed IN, `#[cfg(test)]` skipping stays OUT, `@generated` banner detection is rejected.**)
 - **N102 — T14's labelling protocol tightened, inside its existing deliverable.** Sample **per score
   bucket** (`[0.75,0.85)`, `[0.85,0.95)`, `[0.95,1.00)`, `=1.00`) and report precision per bucket — only
   a curve can *locate* a line, and the empty observed `(0.81, 0.86)` gap left the single-threshold label
@@ -1325,7 +1437,10 @@ kept here so the note ledger stays in one place.
   value defends itself (the n²/n⁴ bracket, `≈280`/`≈740`, against our own 439-node largest legitimate
   fragment; lowering drops the **cheap flat** fragments first, and picking the number from our own tree
   repeats the D5/T13 error). Shape-aware is the *correct* instrument but depth is computed nowhere today
-  and one adversarial fixture does not justify a second invisible drop rule — **YAGNI in v1**. **Any
+  and one adversarial fixture does not justify a second invisible drop rule — **YAGNI in v1**.
+  (**Updated at the T14 review — N119: depth *is* now computed (`NormTree::depth()`, unrendered), so
+  that objection is RESOLVED; the trigger is MET; D9 re-opens as a decision blocked on T15(c), and the
+  v1 ceiling value is unchanged.**) **Any
   time- or budget-based cutoff is foreclosed outright** (it would make the candidate set a function of
   machine load — A7/R6/determinism), written down explicitly so nobody reaches for it later. **What N70
   did and did not establish** is recorded too: **one point, not a curve**, so the nested-family exponent
@@ -1340,17 +1455,21 @@ kept here so the note ledger stays in one place.
   and a shape-dominated tail; those conclusions stay in the T12 record and R1 cites them. What T12
   cannot give is **any constant for real code**. R1's mitigation line now points at **T14's acceptance
   criteria (N107)** and states that **S3 closes with R1 carried forward as an accepted, characterized,
-  triggered risk** — the honest state, and a fine state to ship v1 in.
+  triggered risk** — the honest state, and a fine state to ship v1 in. **SUPERSEDED at the T14 review
+  (N112): T14 supplied what T12 could not, so R1 is now CLOSED as a risk and restated as a documented
+  limit; and N107(1)'s "constant" turns out not to exist — see **A10** (N114).**
 - **N107 — T14 gains three acceptance criteria, written as criteria rather than aspirations.**
   (1) **F per kLOC on real code as a function of `min_nodes`** — the actual gap nobody had named: the
   envelope is parameterized in F, every user has LOC, and without that constant `Θ(F²)` cannot answer
   *"how long on my 80 kLOC crate?"*; our one data point (134 fragments for `src`) is an anecdote.
-  (2) **End-to-end wall-clock at a named scale target against a stated budget** — the budget is a
-  **product decision reserved to the human and is recorded OPEN, number TBD**, in Anders' proposed form
-  (one crate in the class of `syn`/`regex`/`ripgrep`, default flags, best-of-3, developer machine).
-  Reason recorded: **without a stated budget no measurement can be a pass or a fail**, and R1 stays open
-  by construction. **No number was invented.** (3) The joint **`(node count, depth)` distribution of
-  admitted fragments** — one histogram, which also discharges D9's trigger.
+  (**Answered at T14 §1, and the answer is that there is no constant — only a 10.6–43.4 range; A10.**)
+  (2) **End-to-end wall-clock at a named scale target against a stated budget** — the budget was a
+  **product decision reserved to the human**, recorded OPEN here at T12 with **no number invented**, in
+  Anders' proposed form (one crate in the class of `syn`/`regex`/`ripgrep`, default flags, best-of-3,
+  developer machine). Reason recorded: **without a stated budget no measurement can be a pass or a
+  fail**, and R1 stays open by construction. **SET at T14: 10 s** (T14 record §0.1, with provenance and
+  the rejected alternatives); the scale target **FAILED it** (§2). (3) The joint **`(node count, depth)`
+  distribution of admitted fragments** — one histogram, which also discharges D9's trigger.
 - **N108 — T14's corpus selection is pre-registered in its row, before any crate is picked.** Choosing a
   corpus after seeing which one flatters dedup is **fitting, the same error N102(3) names, wearing a
   different hat**. The declared criterion is **coverage of the cost-bearing shapes**: ≥1 crate with many
@@ -1380,6 +1499,8 @@ own** — an **input to T14's corpus criteria (N108)**, not a standing risk.
 **Sequencing (Anders, recorded):** **D5 (with these repairs) → T12 (N59/N70/N75/N83, N84(c),
 parameterized per N96, plus N93 and N86(a) in its doc pass) → T14 → D5-confirm + T13 together →
 S3 close.** T14 sits before the two evidence-bearing items because it is what makes them dischargeable.
+(**Re-sequenced at the T14 review — N115/N116/N118: T12 and T14 are done; what follows is **D10**, then
+**D11** → **T13′**, and **D12** — all three human decisions, with **S4 = T15–T18** conditional on D10.**)
 
 ### T12 measurement record — the performance envelope (N59/N70/N83/N84c/N96)
 
@@ -1470,7 +1591,9 @@ because N90 pins what was measured.
 fraction is flat at ~19–20% across an 8× range of F (and ~24–25% at the higher floor, where the
 surviving fragments are more uniform in size). T11's `4.7–5.5×` is therefore a **constant factor**
 (1/0.20 = 5.0× — the same number, now shown to be stable rather than a single-corpus artifact) and
-the pipeline remains **Θ(F²)** TED evaluations. R1 is mitigated, not discharged.
+the pipeline remains **Θ(F²)** TED evaluations. R1 is mitigated, not discharged. (**R1's standing was
+superseded at the T14 review — N112 closes it as a documented limit; the Θ(F²) statement here is
+unaffected.**)
 
 **N96 satisfied — what the two series do and do not show.** The supported claim is narrower than
 "same curve": **the pair-count exponent is parameterized by F** — Θ(F²) TED evaluations, deterministic
@@ -1600,6 +1723,8 @@ rendered.
 **What T12 does not claim.** These are synthetic corpora on one loaded dev machine: they establish the
 **shape** (Θ(F²), constant-factor pre-filter, shape-dominated tail) and pin the counters exactly, but
 not the constant for any real codebase. T14's third-party corpus is the first honest source for that.
+(**T14 supplied it, and the answer is that no single constant exists — F/kLOC spans 10.6–43.4, driven
+by generated-code density: **A10** (N114).**)
 
 #### Ledger
 
@@ -1614,14 +1739,915 @@ the same reason.
 
 **Open ledger after T12:** N78/N84(a,b,d,e) (still owed → **T14**) · **T13** (`min_nodes`; T12's curve
 is parameterized in F, so T13 **re-parameterizes** it rather than voiding it — not a simple rescale;
-see *N59/N96 — the curve*) · N64/N69/N85/N86(c) (record) · N24/N31/N33/N34/N40 (record) ·
+see *N59/N96 — the curve*; **T13 was SPLIT at the T14 review into D11 + T13′ — N118**) · N64/N69/N85/N86(c) (record) · N24/N31/N33/N34/N40 (record) ·
 N46 (record) · N60 (record) · **the `MAX_NODES = 2000` ceiling is now evidence-backed as too generous
 for pathological shapes — the human ruled at the T12 review that it stays flat at 2000 in v1; the
 reasoning and the revisit trigger are D9.**
 
 **Added at the T12 review (APPROVE):** **R9** (shape-dominated per-pair cost, N103) · **D9** (shape-aware
-ceiling deferred, N104) · **R1** amended to *carried forward, characterized* (N106) · **T14** gains
+ceiling deferred, N104) · **R1** amended to *carried forward, characterized* (N106 — **superseded at the
+T14 review: R1 CLOSES as a documented limit, N112**) · **T14** gains
 acceptance criteria (N107) and pre-registered corpus criteria (N108) · `cli.rs`'s `MAX_NODES` comment
 stamped (N105). All of it is documentation; **no behaviour, threshold, floor, ceiling value, report byte
 or counter changed.** See §11 for the note-by-note ledger, including the two items explicitly recorded as
 **not** rows.
+
+### T14 measurement record — the third-party corpus (N102/N107/N108)
+
+#### 0. Pre-registration (N108) — written down BEFORE the tool was run on any of these crates
+
+Everything in this section was committed to the record before `dry4rust` was pointed at a single
+third-party file. That ordering **is** the protocol: choosing a corpus after seeing which one flatters
+the tool is *fitting*, the same error as writing a decision rule after seeing the curve (N102(3)).
+Deviations from anything below are recorded explicitly in the results sections, with the reason.
+
+##### 0.1 The budget — **10 s**, set by the human, deliberately aggressive
+
+N107(2) recorded the budget as **OPEN, the human's to set, and not to be invented**. It is now **SET**:
+
+> **10 seconds**, one mid-size crate, **default flags**, **best-of-3**, developer machine, `--release`.
+
+**Provenance, recorded because D5's `0.75` had none (N87c).** The human chose `10 s` over two
+alternatives he named and rejected: **30 s** ("a coin toss") and **60 s** ("likely to pass"). He chose
+the number *knowing it would probably fail*, so that a failure would force optimisation work into S3
+rather than let a comfortable line ratify the status quo. Three consequences follow and are binding on
+this task:
+
+- **A clean, well-measured FAIL against a deliberately hard line is a successful T14.** The verdict is
+  the deliverable, not a pass.
+- **T14 measures; it does not optimise.** Nothing was tuned to meet the number — no flag, floor,
+  ceiling or code path was changed to move a timing. If the budget is blown, that is a **finding**, and
+  any optimisation is a separate task the human sequences.
+- The budget is **not softened, re-scoped or re-based** anywhere in this record.
+
+##### 0.2 The corpus — crates, shas and justification, fixed before measurement
+
+Chosen against N108's declared coverage criteria only, and **not** against any observed output. All
+three are well known and permissively licensed (MIT **or** Apache-2.0). **No third-party source is
+vendored into this repository**: the clones live outside the working tree at
+`../_t14-corpus/<crate>` and are pinned by sha here. Only the harness, the pins and our measurements
+are committed.
+
+| slot | crate | scanned path | sha (pinned) | N108 criterion it covers | why this crate |
+|---|---|---|---|---|---|
+| **C1** | `serde` (serde-rs/serde) | `serde_core/src` | `a874a1b1bb1cc16cf5ee3b1b7b527af5705742bb` | **many small `impl` blocks** | `de/impls.rs` and `ser/impls.rs` are hundreds of tiny `impl Serialize/Deserialize for T` blocks, most of them single-method — exactly N83's *close-sized nested wrapper* case, where the size-ratio pre-filter **cannot** prune the `impl↔method` cross and the `d²` multiplicity is tight rather than loose |
+| **C2** | `itertools` (rust-itertools/itertools) | `src` | `af6d17d3f4a963c087e81b327b957966e1169ff5` | **trait-heavy** | the `Itertools` trait is a single trait with ~100 **provided (default-body)** methods — A1's wrapper asymmetry says a `trait` emits no wrapper fragment, only its default bodies, and that path has never been exercised. First realistic chance at **N86(a)**'s revisit trigger |
+| **C3** | `syn` (dtolnay/syn) | `src` | `b5d62a6e43a29418e118b7bcb48e211cefc0154f` | **generated code** + **scale target** | `src/gen/{clone,debug,eq,hash,visit,visit_mut,fold}.rs` are machine-generated by `syn-internal-codegen` — the only realistic source of the depth N70 needed a synthetic adversary to produce (feeds N107(3) and **D9**'s trigger). Also the **named scale target** for §0.1's budget: it is the first crate in Anders' proposed class (`syn` / `regex` / `ripgrep`) |
+
+**Cross-crate pair for the zero-labelling protocol:** **C1 × C2** (`serde_core` × `itertools`) — two
+crates with no shared lineage, no shared dependency and no shared domain. Every cross-crate hit is
+non-actionable **by construction**, so the histogram reads the coincidence null with no human in the
+loop.
+
+**Pre-committed honesty clause.** If a crate turns out to be a poor fit for the criterion it was
+chosen against, the result is **kept and the misfit reported** — it is not swapped for a
+better-looking crate. Same rule as N108's "results reported whatever they turn out to be".
+
+##### 0.3 The decision rule for the hand-label — pre-registered (N102(3)), stated before any labelling
+
+§8's single `<50%` criterion is **replaced**. Writing a rule after seeing the precision curve is
+*fitting*, so the rule is fixed here, in terms of the **contrast between adjacent buckets** and of §4's
+**cost asymmetry** (a false positive costs a developer a read and a dismissal; a false negative costs
+nothing that was not already being paid — so the default belongs *above* the F1-optimal point):
+
+Let `p(B)` be the *actionable* precision of bucket `B`, over buckets
+`[0.75,0.85)`, `[0.85,0.95)`, `[0.95,1.00)`, `=1.00`.
+
+1. **Confirms `0.85`** iff `p([0.85,0.95)) − p([0.75,0.85)) ≥ 20` percentage points **and**
+   `p([0.75,0.85)) < 50%`. The threshold must be shown to *separate*, not merely to sit somewhere.
+2. **Refutes `0.85` downward** (the line is too high) iff `p([0.75,0.85)) ≥ 50%` — the dropped band
+   carries enough signal to pay for itself, and `0.80` or `0.75` is the better line.
+3. **Refutes the threshold as the instrument** (T13's thesis; the lever is `min_nodes`, not
+   `--threshold`) iff **no** adjacent-bucket contrast reaches 20 points **and** every bucket including
+   `=1.00` sits below 50%. A flat, low curve says the score does not rank actionability at all.
+4. **Indeterminate** in every other case — reported as indeterminate, not rounded to the nearest
+   conclusion.
+5. **`=1.00` is a bucket, not a control.** T13's central claim rests on 7 exact-`1.00` findings that
+   nobody has ever hand-labelled. If `p(=1.00)` is **below** `p([0.95,1.00))`, that is direct evidence
+   for T13's dominant-false-positive-class claim and is reported as such under rule 3.
+6. **Attribution is reported alongside, never folded in.** Precision is reported **twice** — *actionable*
+   and *actionable-and-attributed* (R8). The rules above are evaluated on the *actionable* number, and
+   the strict number is reported beside every one of them. On our own corpus the strict number was
+   **0 of 10** (§7b); that is the honest headline form.
+7. **`unsure` is a first-class label.** Third-party code the labeller does not know is genuinely hard to
+   judge. An unsure pair is counted in the denominator and **not** in the numerator, and the count is
+   reported per bucket, so the reader can see how much of the curve is guesswork.
+
+##### 0.4 Sample size, pre-registered
+
+**N = 8 per bucket** (4 buckets, 32 pairs), sampled **deterministically** — every `⌈n/N⌉`-th finding in
+the run's own canonical `(left, right)` order — so the sample is reproducible from the pin alone and
+carries no labeller discretion. Where a bucket holds fewer than 8 findings, **all** of them are
+labelled and the actual `n` is stated. N is below §8's original 20 for one reason, stated in advance:
+labelling is the expensive part of T14 and the acceptance criteria (N107 1–3) are sequenced first.
+
+##### 0.5 What is measured, and with which pinned flags (N90)
+
+Every number below is a `(corpus, sha, full flag set)` triple, **defaults written out**. Two flag sets
+are used and are never mixed:
+
+```
+default    --threshold 0.85 --min-lines 4 --min-nodes 20 --max-nodes 2000
+histogram  --threshold 0.75 --min-lines 4 --min-nodes 20 --max-nodes 2000
+```
+
+The `histogram` set exists only so the `[0.75, 0.85)` bucket is visible at all; it is not a proposal to
+move any default.
+
+#### 1. N107(1) — **F per kLOC on real code, as a function of `min_nodes`**
+
+The gap Anders named: the envelope is parameterised in **F**, every user has **LOC**. Without this
+constant `Θ(F²)` cannot answer *"how long on my 80 kLOC crate?"*. The 134-fragments-for-`src` number
+was one anecdote on one corpus; this is three.
+
+**Pinned command** (`DRY4RUST_CORPUS_ROOT=../_t14-corpus`, sha-verified at run time):
+
+```
+cargo test --release --test corpus -- --ignored --exact f_per_kloc_by_min_nodes --nocapture --test-threads=1
+```
+
+Flag set: `--threshold 0.85 --min-lines 4 --min-nodes {20,30,35,40,42} --max-nodes 2000`.
+
+| crate (sha) | files | LOC | F @20 | **F/kLOC @20** | F @30 | F @35 | F @40 | F @42 |
+|---|---|---|---|---|---|---|---|---|
+| `serde_core` `a874a1b1` | 19 | 12 032 | 127 | **10.56** | 68 | 48 | 40 | 37 |
+| `itertools` `af6d17d3` | 52 | 15 639 | 423 | **27.05** | 243 | 204 | 186 | 173 |
+| `syn` `b5d62a6e` | 55 | 51 754 | 2 245 | **43.38** | 1 379 | 1 083 | 829 | 760 |
+
+At `min_nodes = 20`: TED evaluations 1 808 / 17 456 / **521 365**; pairs considered on `syn`
+**2 518 890**; findings 30 / 71 / **6 616**.
+
+**Verdict — DELIVERED, with a caveat that must travel with it.** F/kLOC is **not a constant**. It
+spans **10.6 → 43.4**, a **4.1× spread**, across three ordinary crates at the same flags. So
+`Θ(F²)` still cannot be restated per-kLOC as a single number; the honest user-facing form is a
+**range**, and the range is wide enough that the two ends differ by **17×** in predicted cost. The
+driver is visible in the corpus itself: `syn` is 47% machine-generated (§4b), and generated code is
+fragment-dense. `serde_core`, chosen for *many small `impl` blocks*, sits at the **bottom** — the
+blocks are small enough that most fall under the 20-node floor. That is a **misfit against its
+N108 criterion, kept and reported, not swapped** (§0.2's honesty clause): C1 does exercise the
+close-sized nested-wrapper cross, but it is the *least* fragment-dense crate of the three, which is
+the opposite of what "many small impl blocks" suggests.
+
+`min_nodes` is a strong lever on F, and its effect is **crate-dependent**: 20→42 cuts F by
+**71%** on `serde_core`, **59%** on `itertools`, **66%** on `syn`. Since cost is `Θ(F²)`, a 66% cut in
+F is an ~**8.6×** cut in pair count.
+
+#### 2. N107(2) — **end-to-end wall-clock vs the 10 s budget**
+
+**Pinned command:**
+
+```
+cargo test --release --test corpus -- --ignored --exact end_to_end_wall_clock_against_the_budget --nocapture --test-threads=1
+```
+
+Flag set: **defaults** — `--threshold 0.85 --min-lines 4 --min-nodes 20 --max-nodes 2000`.
+Best-of-3, `--release`, single-threaded test harness, machine otherwise idle.
+Machine: Windows developer box, the same one as the T12 record (which measured up to **2.7×**
+session-to-session variance on it — so the **fastest** repeat is the headline and the slowest is
+printed beside it, never averaged).
+
+| crate | fastest of 3 | slowest of 3 | vs 10 s |
+|---|---|---|---|
+| `serde_core` (12.0 kLOC) | **210.5 ms** | 244.6 ms | under, 48× headroom — context only |
+| `itertools` (15.6 kLOC) | **3.467 s** | 6.494 s | under, but the *slowest* repeat is 65% of budget |
+| **`syn` (51.8 kLOC) — the named scale target** | **103.878 s** | 124.222 s | **FAIL — 10.4× over** |
+
+> ### **BUDGET VERDICT: FAIL.**
+> **103.878 s against a 10 s budget — 10.4× over, on the fastest of three repeats.**
+
+**This is a successful T14, not a failed one** (§0.1). The human set `10 s` over `30 s` and `60 s`
+*expecting* it to fail, so that the failure would force the optimisation into S3. Nothing was tuned to
+move this number.
+
+**Where the time goes.** The T12 counters, exposed for exactly this, answer it without new
+instrumentation: at defaults `syn` yields **F = 2 245** fragments → **2 518 890** pairs → after the
+size-ratio pre-filter **521 365 TED evaluations**. Fragment extraction and parsing are not the cost;
+the quadratic pair loop is. `itertools` at 15.6 kLOC passes with F = 423 (**17 456** TED evals); `syn`
+is **3.3× the LOC** but **30× the TED evaluations** — the `Θ(F²)` envelope reproducing itself exactly
+as D5 predicted, with the F/kLOC spread of §1 amplified by the square.
+
+**A user-side mitigation was priced, and it is not enough.** Because 90.7% of `syn`'s findings are
+generated-to-generated (§4b), the obvious question is whether excluding `src/gen/**` rescues the
+budget. It does not:
+
+```
+target\release\dry4rust.exe <the 48 non-gen .rs files under syn/src> \
+  --threshold 0.85 --min-lines 4 --min-nodes 20 --format json
+```
+
+| scan | LOC | findings | fastest of 3 | vs 10 s |
+|---|---|---|---|---|
+| `syn/src` (all 55 files) | 51 754 | 6 616 | 103.878 s | **10.4× over** |
+| `syn/src` minus `gen/**` (48 files) | ~26 400 | **287** | **43.578 s** | **4.4× over** |
+
+Halving the input removes **95.7%** of the findings and only **58%** of the time. Exclusion is a
+findings-quality lever, **not** a performance fix. (Runs: 43.578 / 78.221 / 106.456 s — the variance
+is the box, and is itself a reason the headline is best-of-3.)
+
+##### 2b. Independent repeat (Bhaskar, T14 verification) — recorded beside, not merged into, the above
+
+A second session on the same box re-ran both timings **once** (not best-of-3). Both sets are kept with
+their pins; neither overwrites the other, because the **spread between sessions is itself the finding**:
+
+| measurement | this record (best of 3) | verification repeat (1 run) | session swing | verdict on both |
+|---|---|---|---|---|
+| `syn/src`, defaults | **103.878 s** — 10.4× over | **66.618 s** — **6.7× over** | 1.56× | **FAIL either way** |
+| `syn/src` minus `gen/**` | **43.578 s** — 4.4× over (58% of time removed) | **31.087 s** — **3.1× over** (~53% removed) | 1.40× | **still over budget; exclusion is not a performance fix either way** |
+
+**The conclusions are unchanged in every case, and that is the point worth making.** A 1.4–1.6×
+session swing on this box moves the multiple over budget (10.4× → 6.7×) without touching the verdict:
+the scale target misses a 10 s budget by most of an order of magnitude, and removing 47% of the input
+still leaves it 3–4× over. Timings on this box are quoted with their session, never as a constant.
+
+#### 3. N107(3) — **the joint `(node count, depth)` distribution of admitted fragments**
+
+Depth was **not computed anywhere** before this task; `NormTree::depth()` was added for it (leaf = 1,
+counts-self, mirroring `node_count`), surfaced as `RunOutput::admitted: Vec<FragmentShape>` — unrendered,
+no report-format change, façade goldens byte-exact, `RunStats` still `Copy`.
+
+**Pinned command:**
+
+```
+cargo test --release --test corpus -- --ignored --exact admitted_fragment_shape_histogram --nocapture --test-threads=1
+```
+
+Flag set: **defaults**.
+
+| crate | admitted F | deepest fragment | largest fragment | occupancy of the deep-and-large quadrant (≥100 nodes **and** depth ≥20) |
+|---|---|---|---|---|
+| `serde_core` | 127 | 70 nodes / **depth 15** | 181 nodes / depth 8 | **empty** |
+| `itertools` | 423 | 168 nodes / **depth 19** | 753 nodes / depth 11 | **empty** (168/19 misses by one) |
+| `syn` | 2 245 | 264 nodes / **depth 35** | 988 nodes / depth 22 | **9 fragments** — 4 at 250–499 nodes & depth ≥30, 3 at 100–249 & depth 20–29, 2 at 500–2000 & depth 20–29 |
+
+> ### **D9 TRIGGER: HIT — on real, third-party code.**
+> The deep-and-large quadrant is **not purely synthetic**. `syn` admits fragments at **depth 35 and
+> 264 nodes**, and 9 fragments in the quadrant altogether. N70 needed a synthetic depth-85 adversary
+> to reach it; real code reaches it too, less extremely.
+
+Two qualifications, both material and neither softening the verdict:
+
+- Real depth is **far** below the synthetic adversary (35 vs 85), and the observed quadrant is
+  **thinly populated**: 9 of 2 245 fragments (**0.4%**) on the single crate that hits it at all, and
+  **0 of 550** across the other two.
+- All nine come from `syn`, and `syn` is the crate chosen *for* generated code. The shape is real, but
+  its observed source in this corpus is narrow — a **one-crate** result, and it should be labelled as
+  one rather than generalised to "Rust code reaches depth 35".
+
+**D9's optional non-blocking nested-family exponent sweep**, which D9 asked to be folded into T14's
+harness, was run (`nested_shape_cost_curve` in `tests/perf.rs`, `DRY4RUST_PERF_REPEATS=3`):
+
+| target nodes | levels | actual nodes | TED evals | fastest of 3 | slowest of 3 |
+|---|---|---|---|---|---|
+| 500 | 11 | 526 | 1 | **339.712 ms** | 397.161 ms |
+| 1 000 | 22 | 1 043 | 1 | **17.478 s** | 23.550 s |
+| 2 000 | 43 | 2 030 | — | **above the 2 000-node ceiling, skipped** | — |
+
+**A single TED evaluation** on a 1 043-node nested fragment costs **17.5 s** in this session and
+**7.614 s** in the verification repeat (Bhaskar, one run) — see §8, where both are carried.
+
+#### 4. N84(c) — **pre/post-dedup, and the pre-written counter-outcome**
+
+**Pinned command:**
+
+```
+cargo test --release --test corpus -- --ignored --exact score_histogram_and_dedup_ratio --nocapture --test-threads=1
+```
+
+Flag set: **histogram** — `--threshold 0.75 --min-lines 4 --min-nodes 20 --max-nodes 2000`.
+
+| crate | candidates **before** dedup | **after** | ratio |
+|---|---|---|---|
+| `serde_core` | 59 | 30 | **1.97×** |
+| `itertools` | 112 | 71 | **1.58×** |
+| `syn` | 19 205 | 6 616 | **2.90×** |
+
+> ### **The pre-written 1.00 counter-outcome did NOT occur. Dedup does substantial real work.**
+
+The brief pre-wrote the outcome "if it comes back 1.00 across several real crates too, that is a
+genuine finding — a post-v1 revisit note, not a removal". **It came back 1.58–2.90.** So the
+opposite is now on the record, and the earlier observation is explained rather than generalised:
+**17-pre = 17-post was a property of our own fixture corpus**, which has no nested clone site (N78/N79
+identified that cause correctly). On real code, dedup removes **37–66%** of raw candidates. This
+**closes** N84(c) affirmatively and removes the post-v1 revisit note that the 1.00 outcome would have
+created.
+
+##### 4b. An unregistered observation, recorded because it dominates the scale target
+
+Not asked for, found while labelling, and measured afterwards with a pinned command rather than left
+as an impression:
+
+```
+target\release\dry4rust.exe D:\src\gh\_t14-corpus\syn\src --threshold 0.85 --min-lines 4 --min-nodes 20 --format json
+```
+
+| population | count | share |
+|---|---|---|
+| all findings on `syn` | 6 616 | 100% |
+| **both sides inside `src/gen/**` (machine-generated)** | **6 001** | **90.7%** |
+| one side generated, one hand-written | 328 | 5.0% |
+| both sides hand-written | **287** | **4.3%** |
+| exact-`1.00` findings | 3 432 | 100% |
+| — of those, both sides generated | **3 215** | **93.7%** |
+
+`src/gen/*.rs` carries the banner *"This file is @generated by syn-internal-codegen. It is not
+intended for manual editing."* — so **90.7% of the tool's output on the scale target is, by
+construction, non-actionable**: the duplication is the code generator's, and no local edit can remove
+it. This is an **observation, not a decision**. It bears on T13 (§5), on the budget (§2 — excluding it
+does not rescue the timing) and on N101's option (c) `--exclude`, and it is the human's to sequence.
+(**Promoted at the T14 review to the risk register as **R10** (N113); the `--exclude` question is now
+**D12** (N117).**)
+
+#### 5. N102 — the hand-label, against the §0.3 pre-registered rule
+
+**Pinned command** (deterministic stride sampling, N = 8 per bucket, reproducible from the pin alone):
+
+```
+cargo test --release --test corpus -- --ignored --exact hand_label_sample --nocapture --test-threads=1
+```
+
+Flag set: **histogram** (so the `[0.75,0.85)` bucket exists at all).
+
+**Scope actually labelled, and the deviation from §0.4 stated plainly.** §0.4 pre-registered N = 8 per
+bucket. Delivered: **all four buckets of `itertools` (32 pairs)** and **the `=1.00` bucket of `syn`
+(8 pairs)** = **40 pairs**. **Not labelled: `serde_core` entirely, and `syn`'s three non-`=1.00`
+buckets.** Reason, per the brief's own sequencing: labelling is the expensive part, N107 1–3 were
+sequenced first, and the mandatory bucket is `=1.00`. `itertools` was chosen as the fully-labelled
+crate because it is the trait-heavy slot and therefore also carries the A1/N86(a) verdict (§7).
+
+**Labeller.** One labeller, an AI agent, not a maintainer of any of these crates. That is a real
+limitation and is not dressed up: the rubric below is applied honestly but without maintainer context.
+
+**Rubric.** `Yes` = a maintainer could remove the duplication with a straightforward local change and
+would plausibly take the patch. `Borderline` = the duplication is real but removal is awkward or
+costs more than it saves. `No` = nothing extractable; shape coincidence. `Unsure` = cannot judge.
+Per §0.3(7), `Borderline`/`Unsure` count in the denominator, never the numerator.
+Second column **`attributed`** (R8) = does the tool's evidence — a score over an
+identifier/literal/macro-erased tree — match the *human's* reason for calling it duplication?
+
+##### 5a. `itertools` `af6d17d3`, all four buckets
+
+| bucket | n | Yes | Borderline | No | Unsure | **precision (actionable)** | **actionable-and-attributed** |
+|---|---|---|---|---|---|---|---|
+| `[0.75,0.85)` | 8 | 2 | 1 | 5 | 0 | **25.0%** | **12.5%** (1/8) |
+| `[0.85,0.95)` | 8 | 4 | 2 | 2 | 0 | **50.0%** | **50.0%** (4/8) |
+| `[0.95,1.00)` | 8 | 3 | 3 | 2 | 0 | **37.5%** | **37.5%** (3/8) |
+| **`=1.00`** | 8 | 2 | 3 | 3 | 0 | **25.0%** | **25.0%** (2/8) |
+
+The single `Yes`-but-**not**-attributed case is instructive and is the same defect R8 named on our own
+corpus: `merge_join.rs` 150↔211 is a genuine duplication, but the tool's evidence is *the whole `impl`
+block*, whereas the duplication a human would act on is the small `size_hint` body inside it. The tool
+is right for a reason a human would not give.
+
+##### 5b. `syn` `b5d62a6e`, the mandatory `=1.00` bucket
+
+| bucket | n | Yes | Borderline | No | Unsure | precision (actionable) | actionable-and-attributed |
+|---|---|---|---|---|---|---|---|
+| **`=1.00`** | 8 | **0** | 1 | 7 | 0 | **0.0%** | **0.0%** |
+
+**7 of the 8 sampled pairs are generated-to-generated** (`gen/debug.rs`, `gen/eq.rs`, `gen/fold.rs`,
+`gen/hash.rs`) —
+non-actionable by construction, consistent with §4b's 93.7%. The eighth (`buffer.rs` `ident()` ↔
+`literal()`) is a real same-shape/different-variant pair that a macro could collapse and that the
+maintainer evidently chose not to: `Borderline`.
+
+##### 5c. Verdict against the §0.3 rule — evaluated as written, before the curve was seen
+
+- `p([0.85,0.95)) − p([0.75,0.85))` = `50.0 − 25.0` = **25.0 pp ≥ 20 pp** ✔, and
+  `p([0.75,0.85))` = `25.0% < 50%` ✔ →
+
+> ### **Rule 1 FIRES — on low-confidence evidence (n = 8 per bucket, one crate, one non-maintainer labeller).**
+> The pre-registered condition is met, and is reported as met: precision doubles across the line
+> (25.0% → 50.0%). **This is not a demonstration that `0.85` separates.** The 25 pp contrast is
+> **two pairs** wide and clears the 20 pp bar by only **5.0 pp**, and one label is worth **12.5 pp** of
+> a bucket — so **a single relabel in the right direction unfires the rule** (§9(4)). Either direction
+> does it: row **7**, `No → Yes` in `[0.75,0.85)`, takes that bucket to 37.5% and the contrast to
+> `50.0 − 37.5` = **12.5 pp**; any one of rows **9/10/11/16**, `Yes → Borderline`/`No` in
+> `[0.85,0.95)`, takes that bucket to 37.5% and the contrast to `37.5 − 25.0` = **12.5 pp**. A
+> pre-registered rule that fires with a **one-relabel** margin is much weaker evidence than one that
+> survives two, and that sensitivity belongs in this headline, not only in the caveats, because the
+> headline is what gets quoted. What is on the record is *"the pre-registered rule fired on a small
+> sample"*, not *"the threshold is shown to separate"*.
+> Rules 2 and 3 do not fire (`p([0.75,0.85)) < 50%`; an adjacent contrast of 25 pp exists).
+
+> **Row 7 is pivotal, and it is a † row** — one of the five §5e rows whose deliberation was close and
+> moved between labels while labelling. It is `position_max` vs `position_max_by_key`, tallied **`No`**
+> in the low bucket: that is the direction that **helps** rule 1 fire, and it is individually decisive —
+> **had it been tallied `Yes`, the rule would not have fired**. Disclosed here, next to the sensitivity,
+> because that is where a reader meets it.
+> **The other four † rows do not steer the rule** (Bhaskar, T14 verification): rows **12** and **14**
+> moved *away* from `Yes` in the retained `[0.85,0.95)` bucket and therefore **hurt** rule 1, and rows
+> **19** and **20** sit in `[0.95,1.00)`, which rule 1 does not read. So there is **no systematic
+> directional steering** in the deliberated rows — the one exposure is a single pivotal close call, and
+> it is on the firing side.
+
+- **A limitation of the pre-registered rule itself, recorded rather than repaired (Bhaskar, T14
+  verification).** Rule 1 can fire while the above-threshold bucket is **still mostly false positives**:
+  here `p([0.85,0.95))` = **50.0%** — half of what the default retains is non-actionable — and
+  `p(=1.00)` = 25.0%. Measured against §4's cost-asymmetry rationale, which is an argument about what a
+  false positive costs a reader, a rule that tests only the *contrast* between buckets and never the
+  *absolute* level of the retained bucket is weak evidence for a default. The rule was
+  **pre-registered**, so it is evaluated exactly as written and the weakness is **reported, not
+  rewritten** — writing or amending the rule after seeing the curve is the fitting error N102(3) exists
+  to prevent. A successor rule with an absolute-precision term is the human's to set, **before** the
+  next labelling.
+- **Chronology, stated plainly (Bhaskar, T14 verification).** §0's pre-registration and every result in
+  §1–§8 are landing together in the **same uncommitted change**, so **pre-registration cannot be
+  established from the artifact**: the record asserts the ordering and nothing in git witnesses it. Two
+  things are evidence *against* wholesale fitting — `serde_core` is kept and reported as a **misfit**
+  against its own N108 criterion (§1) rather than swapped, and the pre-written `1.00` dedup
+  counter-outcome was left standing in falsifiable form and then did not occur (§4). **That is
+  evidence, not proof.** The fix is procedural and belongs to the *next* task, not to a retrofit here:
+  **commit the pre-registration before measuring.**
+
+- **Rule 5 also holds, and points the other way about the top of the range.** `p(=1.00)` = **25.0%** is
+  **below** `p([0.95,1.00))` = **37.5%**, and on `syn` it is **0.0%**. The precision curve is
+  **non-monotonic**: it rises across `0.85`, peaks in `[0.85,0.95)`, and **falls** at exact `1.00`.
+  Per §0.3(5) this is **direct evidence for T13's dominant-false-positive-class claim** — the exact-
+  `1.00` population is disproportionately shape coincidence (mirrored `next`/`next_back`, `min`/`max`,
+  `sub_scalar`/`mul_scalar`) and, on the scale target, machine-generated code. T13's seven
+  never-labelled exact-`1.00` findings now have 16 labelled third-party siblings, and they do **not**
+  behave like the best findings in the run.
+- **Both results stand together and neither is rounded away:** `0.85` **survives** its pre-registered
+  test on this evidence, and score **above** it does not rank actionability. That is precisely T13's
+  thesis restated from data — the remaining lever is `min_nodes` (§6), not `--threshold`.
+- Strict (attributed) precision peaks at **50.0%** and never exceeds actionable precision, as expected.
+  It is far better than the **0 of 10** our own corpus produced (§7b) — because `itertools`' clones are
+  small, whole-function and identifier-driven, exactly the case the erased tree scores for the right
+  reason.
+
+##### 5d. T13's contested floor — node counts of actionable vs non-actionable findings
+
+N100 measured our one actionable finding at **26 nodes**, *inside* the coincidence mass, so a 30–40
+floor removes it first and takes precision 10%→0% on our own corpus. This is what T13 needed and our
+corpus could not give — the `min(left,right)` node count of the 40 labelled third-party pairs.
+
+**Correction, found by building §5e's ledger and stated before the table it corrects.** The version of
+this table first written into the record (`Yes` n = 8 / median 28 / range 20–61 / 5 of 8; `Borderline`
+n = 10 / 27 / 20–74; `No` n = 22 / 26 / 20–239) **cannot be recomputed from the labelled sample** — its
+`n`s do not match §5a+§5b's own counts (`Yes` is 2+4+3+2+0 = **11**, `No` is 5+2+2+3+7 = **19**) and its
+ranges name node counts (20, 61, 74, 239) that no sampled pair has. It was a transcription defect, not a
+relabelling: the labels themselves are unchanged and reproduce §5a/§5b exactly. The table below is
+**recomputed from §5e row by row**, and every figure in it is checkable there. This is precisely the
+class of error that aggregate-only reporting hides, and it was caught the moment the ledger existed.
+
+| label | n | median min-nodes | range | **share at < 30 nodes** |
+|---|---|---|---|---|
+| `Yes` (actionable) | **11** | **27** | 21–74 | **7 of 11 (64%)** |
+| `Borderline` | 10 | 28 | 22–87 | 6 of 10 (60%) |
+| `No` (non-actionable) | **19** | **25** | 21–53 | 15 of 19 (79%) |
+
+(`median` = the middle order statistic, taking the **upper** of the two middles for even `n` — the same
+`nodes[len/2]` convention the harness prints. Worked: `Borderline` sorted is
+`22,23,24,26,26,28,46,48,52,87`, whose lower middle is 26 and whose `nodes[10/2]` is **28** — 28 is the
+figure reported, and the convention is the upper middle.)
+
+> **The floor separates only weakly, and the price is high.** Actionable and non-actionable findings
+> have **overlapping** node counts on real code (medians **27 vs 25** — no statistical test was run, so
+> this is an **overlap observed, not a difference tested**), and **64% of actionable findings
+> sit below 30 nodes** — so a `min_nodes = 30` floor would remove roughly **two of every three true
+> findings** along with the coincidence mass. What separation the floor does buy is **weak, in the
+> desired direction, and bought at that 64% actionable-recall loss** — it concedes the separation and
+> rejects the price. The arithmetic is recomputed once at **§6/N118** (retained shares, both
+> denominator conventions) and is deliberately **not re-derived here**. N100's 26-node result on our own
+> corpus was **not** an artifact of a 10-finding sample; it reproduces on third-party code at 40 pairs.
+
+This is a **negative result for the 30–40 floor as a precision instrument** and it is reported as it
+falls. It does not decide T13 — the floor is also T13's only lever on *cost* (§1: 20→42 cuts F by
+59–71%, an ~6–12× cut in pair count), and §2's FAIL makes that lever valuable for a reason that has
+nothing to do with precision. **Precision and cost now pull in opposite directions on the same knob,
+and which one wins is the human's decision, not this record's.** (**De-symmetrised at the T14 review —
+N118**: the two legs measure different populations, the pro-floor leg is the weaker one, and the
+coupling exists only because `min_nodes` is currently the sole cost lever. The decision is **D11**.)
+
+##### 5e. The per-pair ledger — all 40 labels, so every aggregate above is recomputable
+
+Aggregates alone are unauditable: a reader can check a named example but not an arbitrary one, so
+neither steering nor transcription error can be excluded — and §5c's headline turns on **two** pair
+labels. The full ledger is therefore on the record. **These are the labels made at labelling time,
+transcribed, not re-made**; the sample identities, scores and node counts are reproduced verbatim from
+`hand_label_sample`'s own output at the pins. `min(nodes)` = `min(left_nodes, right_nodes)`, the
+quantity §5d and T13's floor are about. Paths are relative to each pin's scanned path (§0.2).
+
+`attributed` is recorded only where it is defined — for an actionable pair, per §0.3(6); the strict
+"actionable-and-attributed" numerator counts exactly the rows that are `Yes` **and** `Yes`. Rows marked
+**†** are ones whose deliberation was close and moved between labels while labelling; the label shown
+is the one that was tallied into §5a, and the deliberation is stated in the reason rather than hidden.
+
+**`itertools` `af6d17d3` — `[0.75, 0.85)`**
+
+| # | pair | score | min(nodes) | actionable | attributed | reason |
+|---|---|---|---|---|---|---|
+| 1 | `adaptors/coalesce.rs:183-194` ↔ `:247-262` | 0.7647 | 26 | Borderline | — | mirrored `CoalescePredicate` if/else; the with-count variant threads a tuple through, so factoring is not clearly worth it |
+| 2 | `adaptors/mod.rs:939-961` ↔ `:1044-1066` | 0.7674 | 53 | No | — | `FilterOk` vs `FilterMapOk` double-ended impls: parallel adapter families, bodies differ (`rfind` vs `find_map`) |
+| 3 | `combinations_with_replacement.rs:112-123` ↔ `:125-141` | 0.7547 | 40 | **Yes** | **Yes** | `nth` copies `next`'s prologue verbatim before adding its own loop — exactly the duplication a reader would cite |
+| 4 | `either_or_both.rs:151-157` ↔ `:182-192` | 0.8361 | 28 | No | — | `as_ref` vs `as_deref_mut`: same three-arm `Left/Right/Both` shape, divergent semantics; unifying buys nothing |
+| 5 | `either_or_both.rs:195-201` ↔ `:287-293` | 0.8033 | 27 | No | — | `flip` vs `or`: the three-arm match shape again, unrelated intent |
+| 6 | `either_or_both.rs:246-254` ↔ `:346-354` | 0.7736 | 23 | No | — | `left_and_then` vs `left_or_insert_with`: shape coincidence over the same enum |
+| 7 † | `lib.rs:4587-4595` ↔ `:4617-4626` | 0.7742 | 24 | No | — | `position_max` vs `position_max_by_key`: near copy-paste apart from the `key()` call, but the by-key variant is the idiomatic family member — close call, tallied `No` |
+| 8 | `merge_join.rs:150-169` ↔ `:192-211` | 0.7920 | 50 | **Yes** | **No** | identical `size_hint` bodies in two `OrderingOrBool` impls — real, but the tool's evidence is the whole impl block while the duplication a human would act on is the small body inside it (the R8 case in §5a) |
+
+**`itertools` `af6d17d3` — `[0.85, 0.95)`**
+
+| # | pair | score | min(nodes) | actionable | attributed | reason |
+|---|---|---|---|---|---|---|
+| 9 | `adaptors/mod.rs:78-104` ↔ `:201-227` | 0.8916 | 74 | **Yes** | **Yes** | two `fold` bodies differing only in a couple of match arms |
+| 10 | `combinations.rs:136-144` ↔ `combinations_with_replacement.rs:150-158` | 0.9167 | 22 | **Yes** | **Yes** | the two counting bodies (`n_and_count` / `count`) share their arithmetic |
+| 11 | `either_or_both.rs:287-293` ↔ `:298-308` | 0.8667 | 28 | **Yes** | **Yes** | `or_default` is `or` with `Default::default()` arguments |
+| 12 † | `either_or_both.rs:384-409` ↔ `:426-450` | 0.9259 | 52 | Borderline | — | mirror-image `insert_left`/`insert_right`, `unsafe` blocks and SAFETY comments included; genuine duplication but on different fields — weighed as `Yes`, tallied `Borderline` |
+| 13 | `lib.rs:4389-4395` ↔ `:4560-4566` | 0.9130 | 21 | No | — | `max_set_by` vs `minmax_by`: one-line delegations with matching closure shape, unrelated intent |
+| 14 † | `merge_join.rs:138-147` ↔ `size_hint.rs:77-86` | 0.8763 | 43 | No | — | merge_join's inline lower/upper combination vs the `size_hint::min` helper — an idiom-placement argument, not literal duplication; weighed as a weak `Yes`, tallied `No` |
+| 15 | `multipeek_impl.rs:91-113` ↔ `put_back_n_impl.rs:52-71` | 0.9231 | 48 | Borderline | — | parallel `Iterator` impls over `VecDeque` vs `Vec`; a shared helper is awkward across the buffer types |
+| 16 | `unique_impl.rs:78-81` ↔ `:132-135` | 0.9200 | 23 | **Yes** | **Yes** | two `size_hint` bodies differing only by `self.iter` vs `self.iter.iter` — one should delegate to the other |
+
+**`itertools` `af6d17d3` — `[0.95, 1.00)`**
+
+| # | pair | score | min(nodes) | actionable | attributed | reason |
+|---|---|---|---|---|---|---|
+| 17 | `adaptors/mod.rs:1199-1206` ↔ `:1245-1258` | 0.9583 | 23 | Borderline | — | `Update::next`/`next_back`: near-identical bodies differing only in which iterator method is called |
+| 18 | `lib.rs:4587-4595` ↔ `:4648-4656` | 0.9600 | 24 | **Yes** | **Yes** | `position_max` reduces to `position_max_by(Ord::cmp)` |
+| 19 † | `lib.rs:4587-4595` ↔ `:4738-4746` | 0.9600 | 24 | No | — | `position_max` vs `position_min_by`: cross max/min; the family-level duplication is real but no pairwise fix exists — weighed `Borderline`, tallied `No` |
+| 20 † | `lib.rs:4648-4656` ↔ `:4677-4685` | 0.9600 | 24 | No | — | `position_max_by` vs `position_min`: the same cross max/min case, same reasoning |
+| 21 | `lib.rs:4677-4685` ↔ `:4738-4746` | 0.9600 | 24 | **Yes** | **Yes** | `position_min` reduces to `position_min_by(Ord::cmp)` |
+| 22 | `size_hint.rs:61-73` ↔ `:77-86` | 0.9583 | 46 | Borderline | — | `max`/`min` differ by `cmp::max`/`cmp::min` **and** in the `_ => None` fallback; factoring would hide the difference |
+| 23 | `unique_impl.rs:72-75` ↔ `:89-100` | 0.9565 | 22 | Borderline | — | `next`/`next_back` find/rfind mirror — same category as `Update` |
+| 24 | `unique_impl.rs:119-129` ↔ `:142-159` | 0.9500 | 38 | **Yes** | **Yes** | the `find_map` closure body is duplicated verbatim across `next`/`next_back`; extract it as a named function |
+
+**`itertools` `af6d17d3` — `=1.00`**
+
+| # | pair | score | min(nodes) | actionable | attributed | reason |
+|---|---|---|---|---|---|---|
+| 25 | `adaptors/mod.rs:906-912` ↔ `:944-950` | 1.0000 | 26 | Borderline | — | `FilterOk::next`/`next_back`: verbatim mirror, hard to factor across find/rfind |
+| 26 | `duplicates_impl.rs:173-183` ↔ `:187-197` | 1.0000 | 23 | No | — | `KeyXorValue` impls for `KeyValue`/`JustValue` — the two types are *meant* to differ |
+| 27 | `flatten_ok.rs:75-96` ↔ `:157-178` | 1.0000 | 87 | Borderline | — | `fold`/`rfold` mirror; factoring this pair in Rust is awkward |
+| 28 | `grouping_map.rs:334-342` ↔ `:415-423` | 1.0000 | 28 | Borderline | — | `max_by`/`min_by`: a helper could swap the comparison order, but the `Equal` handling differs |
+| 29 | `lib.rs:4292-4298` ↔ `:4389-4395` | 1.0000 | 21 | No | — | `min_set_by`/`max_set_by` are one-line delegations; nothing to extract |
+| 30 | `peek_nth.rs:71-77` ↔ `:112-118` | 1.0000 | 27 | **Yes** | **Yes** | `peek_nth`/`peek_nth_mut` share buffering logic a private `fill` method would carry |
+| 31 | `peeking_take_while.rs:96-106` ↔ `:134-144` | 1.0000 | 21 | **Yes** | **Yes** | two verbatim `peeking_next` bodies in separate `PeekingNext` impls |
+| 32 | `size_hint.rs:31-36` ↔ `:52-57` | 1.0000 | 28 | No | — | `sub_scalar`/`mul_scalar` share shape only; the operation *is* the content |
+
+**`syn` `b5d62a6e` — `=1.00` (the mandatory bucket)**
+
+| # | pair | score | min(nodes) | actionable | attributed | reason |
+|---|---|---|---|---|---|---|
+| 33 | `buffer.rs:192-198` ↔ `:240-246` | 1.0000 | 24 | Borderline | — | `ident()`/`literal()`: same shape, different `Entry` variant — collapsible only by introducing a macro, which the maintainer evidently chose not to do |
+| 34 | `gen/debug.rs:267-276` ↔ `:2541-2550` | 1.0000 | 38 | No | — | machine-generated by `syn-internal-codegen`, banner-marked "not intended for manual editing" — non-actionable by construction |
+| 35 | `gen/debug.rs:884-891` ↔ `:2998-3005` | 1.0000 | 27 | No | — | generated, as #34 |
+| 36 | `gen/debug.rs:2014-2021` ↔ `:2458-2465` | 1.0000 | 27 | No | — | generated, as #34 |
+| 37 | `gen/eq.rs:410-415` ↔ `:529-535` | 1.0000 | 30 | No | — | generated, as #34 |
+| 38 | `gen/eq.rs:676-680` ↔ `:901-905` | 1.0000 | 24 | No | — | generated, as #34 |
+| 39 | `gen/fold.rs:1087-1097` ↔ `:1684-1694` | 1.0000 | 25 | No | — | generated, as #34 |
+| 40 | `gen/hash.rs:1589-1599` ↔ `:2241-2251` | 1.0000 | 22 | No | — | generated, as #34 |
+
+**Recomputing the record from this table alone** (the point of having it):
+
+- §5a `itertools` per bucket — `[0.75,0.85)` rows 1–8: Yes 2 / Borderline 1 / No 5 / Unsure 0 →
+  **25.0%**, attributed 1/8 = **12.5%**. `[0.85,0.95)` rows 9–16: 4 / 2 / 2 / 0 → **50.0%**,
+  attributed 4/8 = **50.0%**. `[0.95,1.00)` rows 17–24: 3 / 3 / 2 / 0 → **37.5%**, attributed 3/8 =
+  **37.5%**. `=1.00` rows 25–32: 2 / 3 / 3 / 0 → **25.0%**, attributed 2/8 = **25.0%**.
+- §5b `syn` `=1.00` rows 33–40: 0 / 1 / 7 / 0 → **0.0%**, attributed **0.0%**.
+- §5c rule 1: `50.0 − 25.0` = **25.0 pp**, clearing the 20 pp bar by **5.0 pp** — and one label is
+  worth **12.5 pp**, so **any single relabel unfires it**: row **7** `No → Yes` takes `[0.75,0.85)` to
+  37.5% (contrast 12.5 pp), and any one of rows **9/10/11/16** `Yes → Borderline`/`No` takes
+  `[0.85,0.95)` to 37.5% (contrast 12.5 pp). Row **7** is a † row and is individually decisive (§5c).
+  Rule 5: `p(=1.00)` 25.0% < `p([0.95,1.00))` 37.5%.
+- §5d: the three `min(nodes)` populations are rows {3, 8, 9, 10, 11, 16, 18, 21, 24, 30, 31} (`Yes`,
+  n = 11), {1, 12, 15, 17, 22, 23, 25, 27, 28, 33} (`Borderline`, n = 10) and the remaining 19 (`No`).
+- §5a's `Yes`-but-not-attributed example is row **8**, and it is the only one.
+- **`Unsure` was never used**: 0 of 40. §0.3(7) kept it available and no pair needed it — which is
+  itself worth reading with suspicion given a single labeller, and is recorded as a caveat in §9(3).
+
+#### 6. The zero-labelling protocol (N102) — the coincidence null
+
+Kept as specified; the `attributed` column is **not** added (it is undefined when every hit is
+non-actionable by construction). One axis added per the brief: bucketed by **node count** as well as
+score, which prices T13's floor against the null.
+
+**Pinned command:**
+
+```
+cargo test --release --test corpus -- --ignored --exact cross_crate_coincidence_histogram --nocapture --test-threads=1
+```
+
+Corpus: `serde_core` `a874a1b1` × `itertools` `af6d17d3`, 27.7 kLOC combined. Flag set: **histogram**.
+
+| cut-off | cross-crate hits | **per kLOC** |
+|---|---|---|
+| `≥ 0.75` | **6** | **0.217** |
+| `≥ 0.85` (the default) | **0** | **0.000** |
+| `= 1.00` | **0** | **0.000** |
+
+(197 findings total in the combined run; 6 of them cross the crate boundary.)
+
+By node band, all six: **5 at 20–24 nodes**, **1 at 30–39**, none above.
+
+**Reading.** The coincidence null at the shipping default is **zero per kLOC** — two unrelated crates
+produce **no** ≥0.85 cross-crate hit at all. That is a genuinely good result for the `0.85` default and
+it agrees with §5c's rule-1 firing from a completely independent direction (no human in the loop). It
+also says the coincidence mass that *does* exist lives **at the floor**: 5 of 6 hits are in the
+smallest node band. That is the strongest available argument **for** T13's floor — and it sits directly
+against §5d, where the floor also removes 64% of true findings. Both are now measured; neither is
+suppressed.
+
+> **De-symmetrised at the T14 review (N118, Anders) — the two legs are NOT measuring the same
+> population, so this is not a genuine tie.** §5d's 7-of-11 is about **actionable findings a user
+> loses**; this section's 5-of-6 is about **cross-crate coincidences between unrelated crates**, a
+> population **users never encounter** — and §5d/§5e show the `No` rows spanning **21–53 nodes, median
+> 25**, against `Yes`'s median **27**: the two populations **overlap heavily**, and what separation the
+> floor buys is **weak and paid for in recall** (quantified below). (An earlier draft of this paragraph
+> cited "21 to 239, median 26" — that is the **defective aggregate §5d retracts**; on the true range the
+> *sub*-argument it carried, that the coincidence mass is not confined to the floor, does **not**
+> survive: **15 of 19 `No` rows sit below 30 nodes**. The de-symmetrisation does not rest on that
+> sub-argument. It rests on the two legs measuring different populations, and it survives **unchanged
+> and on its own footing** — the correction does **not** strengthen it. What the corrected ledger
+> actually says at a floor of 30: `Yes` loses **7 of 11**, so **4/11 are retained**; `No` loses **15 of
+> 19**, so **4/19 are retained**. The floor therefore **preferentially retains `Yes` rows**, and the
+> actionable share **rises**: **11/30 = 36.7% → 4/8 = 50.0%** excluding `Borderline`, or **11/40 = 27.5%
+> → 4/12 = 33.3%** counting `Borderline` as non-actionable. That is **weak separation in the desired
+> direction, bought at the loss of 64% of actionable findings** — which is a *stronger* argument against
+> raising the floor than "it does not separate", because it **concedes the separation and rejects the
+> price**; read it that way and not as having gone soft. These figures **cannot** be compared for
+> separator quality against the retracted aggregate, because that aggregate has **no recomputable
+> distribution**. §5d's caveat governs unchanged: **an overlap observed, not a difference tested.**)
+> **The pro-floor leg above is
+> the weaker one**, and the "opposite directions on the same knob" framing holds only because
+> `min_nodes` is currently the **sole cost lever** — a knob shortage, not evidence. The ruling is
+> **D11**'s; see **N118**.
+
+#### 7. The remaining T14 consumers
+
+- **N86(a) / A1's revisit trigger — verdict: NOT triggered.** A1's trigger is a specific observation:
+  *block-level trait clones demonstrably missed*. `itertools` was chosen as the first real test (its
+  `Itertools` trait has ~100 provided methods; our own corpus is trait-poor). Of the 32 labelled
+  `itertools` pairs, the actionable ones are **method-body** clones and the tool **found** them
+  (`unique_impl` `size_hint`, `adaptors` `fold`, `either_or_both` `or`/`or_default`,
+  `peeking_take_while`'s two verbatim `peeking_next` bodies). **No case was found where a duplicated
+  `impl`-block-as-a-whole was missed because the trait emitted no wrapper fragment.** A1 stands as
+  decided; the trigger is not met on this evidence. This is a **32-pair sample on one crate**, so it is
+  "not triggered", not "cannot be triggered".
+- **N84(d), test-vs-non-test partition — NOT delivered, and stated as a gap.** All three scanned paths
+  are library `src` trees; `serde_core` and `syn` keep their tests outside the scanned path entirely,
+  and `itertools`' in-file `#[cfg(test)]` modules were not partitioned out. So this corpus **cannot**
+  answer N84(d) as configured, and no number is invented for it. It needs either a corpus slot chosen
+  for its test tree or a partition in the harness; both are new work.
+- **N84(a), N84(e)** are served by §1/§2 (F and its cost consequence) and §4 respectively.
+- **D5-confirm** is served by §1 (the F envelope on real code) and §2 (the `Θ(F²)` reproduction:
+  3.3× LOC → 30× TED evaluations).
+
+#### 8. D9's nested-family exponent (optional, non-blocking)
+
+`nested_shape_cost_curve`, `DRY4RUST_PERF_REPEATS=3`, defaults, `--release`. Two usable points only —
+the third target (2 030 nodes) is above the 2 000-node ceiling and is **correctly skipped**, which is
+itself the ceiling doing its job.
+
+Recorded in §3's table. **1.983× the nodes (526 → 1 043) costs 51.4× the time (339.712 ms → 17.478 s)**,
+an apparent exponent of **≈ 5.8**. The verification repeat (Bhaskar, one run) measured the same two
+points at **34.4×** with the same 1.98× node ratio, and the large point at **7.614 s** rather than
+17.478 s. **Both are kept; neither is averaged away** — and the reading below is stated so that it
+holds at either end. **Read with care:** two points, on a box with measured 2.7×
+session variance and a 34.4×–51.4× session spread on this very ratio, cannot pin an exponent, and the
+small point carries fixed overhead that inflates the slope. What can be said is bounded and is said
+that way — the nested family's cost grows **steeply super-quadratically in node count**, and the two
+observations are **consistent with, and possibly worse than**, D5's `O(n²·d²)` (which, with `d` growing
+linearly in `n`, predicts ~15×; the observed 34.4×/51.4× are both above it, but two noisy points cannot
+establish that the curve *is* at or beyond the theoretical one — only that nothing here contradicts it).
+A **single** TED evaluation on one 1 043-node
+nested fragment costs **17.5 s** in one session and **7.6 s** in another — so *"one pair can approach or
+exceed the whole 10 s budget"* is **session-dependent**: it happened, and it did **not** reproduce on
+the repeat. The 2 000-node ceiling
+is the only thing standing between that curve and an unbounded run. D9's decision is **unchanged**; this
+measurement supports the ceiling's existence rather than revising anything. (**At the T14 review — N119
+— D9 RE-OPENS as a decision blocked on T15(c): the trigger is MET and the "depth not computed"
+objection is resolved. The v1 ceiling value is still unchanged, and a shape-aware ceiling is **not**
+admissible under D8 because it drops fragments.**)
+
+#### 9. What T14 did **not** reach
+
+Stated plainly, per the brief's "a partial T14 with honest gaps beats a rushed complete one":
+
+1. **`serde_core` and `syn` are not fully hand-labelled** — 40 of a full-programme 96 pairs. `syn`'s
+   mandatory `=1.00` bucket **is** labelled; its other three buckets and all four of `serde_core`'s are
+   not. Cost, and N107 1–3 sequenced first (§5).
+2. **N84(d)** test-vs-non-test is not answerable from this corpus (§7).
+3. **Single labeller, not a maintainer** of any of the three crates. No inter-labeller agreement number
+   exists, so the precision figures carry no error bar beyond `n = 8`. `Unsure` was used **0 times in
+   40** (§5e) — read that as a property of one labeller's confidence, not as evidence the pairs were
+   easy.
+4. **`n = 8` per bucket** is small. A 25.0% and a 37.5% differ by **one pair**. §5c's rule-1 firing
+   rests on a 25 pp gap that is **two pairs** wide and clears the 20 pp bar by **5.0 pp** — **one
+   relabel (12.5 pp) unfires the rule**, and the five labels it hangs on are rows **7**, 9, 10, 11 and
+   16 of §5e, auditable individually. Row **7** is a † row and is individually decisive (§5c). It is
+   reported because
+   the rule was pre-registered and fired, not because 8 is a comfortable sample.
+5. **One machine** for §2's timings, with 2.7× known variance — and a second session measured the same
+   scale-target run at **66.618 s** against this record's **103.878 s** (§2b). Both are on the record;
+   neither is averaged. The overrun (**6.7×–10.4×**) is far outside that spread, so the FAIL verdict is
+   safe; the `itertools` PASS at 3.5–6.5 s is **not** comfortably safe and should not be quoted as
+   headroom.
+6. **The `(node, depth)` quadrant result is one crate.** `syn` hits it; the other two do not (§3).
+7. **Pre-registration is asserted by this record, not witnessed by the repository** — §0 and §1–§8 land
+   in the same uncommitted change (§5c). The `serde_core` misfit and the failed `1.00` dedup
+   counter-outcome are evidence against wholesale fitting; they are not proof. Next time: commit §0
+   before measuring.
+8. **The first version of §5d did not reconcile with its own labels** and was corrected against §5e's
+   ledger (§5d). The labels did not change; the aggregate transcription did. It went unnoticed for as
+   long as only aggregates were published — which is the argument for §5e existing at all.
+#### 10. Ledger after T14
+
+**Discharged by this record:** **N107(1)** (§1) · **N107(2)** (§2, **FAIL**) · **N107(3)** (§3, **D9
+trigger HIT**) · **N108** (§0.2, pre-registered before measurement) · **N102(1)–(7)** (§0.3, §5, §6) ·
+**N84(c)** (§4, closes affirmatively — counter-outcome refuted) · **N84(a)/N84(e)** (§1/§2, §4) ·
+**N86(a)/A1 revisit trigger** (§7 — **not** triggered) · **N78** (§4 — the "no nested clone site" cause
+is confirmed as *ours*, and dedup's benefit is now observed outside our fixtures) · **D9's optional
+nested-shape sweep** (§8) · **D5-confirm** (§1/§2 for the envelope; §5c/§6 for `0.85` — **partially**:
+the owed measurement was finally *run*, and it returns **support at low confidence**, not established
+separation. The pre-registered rule **fired** on `n = 8` per bucket from one crate labelled by one
+non-maintainer, **one relabel** would unfire it (§9(4)) — and row 7, a † row tallied `No` in the low
+bucket, is individually decisive (§5c) — and the rule itself can fire while the retained
+bucket is half false positives (§5c); the zero-labelling null is a genuinely clean **0 per kLOC at
+≥0.85** (§6) and is the stronger of the two because no human is in its loop. **R2 stands as written.**).
+
+**Open, and now with evidence pulling both ways:** **T13** — §5d says a `30–40` floor removes **64% of
+actionable findings** (7 of 11 labelled `Yes` pairs sit below 30 nodes) and separates actionable from
+non-actionable by node count only **weakly** (per §6/N118: **weak separation in the desired direction,
+bought at that 64% actionable-recall loss** — conceding the separation and rejecting the price; the
+arithmetic is recomputed there, and §5d's caveat governs — an overlap observed, not a difference
+tested), and N100 reproduces on third-party code at 40 pairs, while §6 says the coincidence null lives **at** the floor
+(5 of 6 cross-crate hits at 20–24 nodes) and §1/§2 say the floor is the cheapest lever on a cost that is
+**10.4× over budget** (6.7× in the verification session — §2b; over either way). Precision and cost pull in opposite directions on the same knob. **T13 must now
+rule between them; T14 does not.** **Superseded at the T14 review (N118): T13 SPLIT — the decision is
+**D11** (the human's, blocked on **D10**) and the execution is **T13′**; the two legs are
+de-symmetrised (§5d/§6 above) and the pro-floor leg is the weaker one.**
+
+**Still open, unchanged by T14:** **R1** (measured and breached — §2; carried forward) **— superseded at
+the T14 review (N112): R1 is CLOSED as a risk and restated as a documented limit; the single-pair tail
+folds into R9, and what to ship is **D10**.** · **N84(b)**
+(recall — needs known-duplicate ground truth, which no third-party corpus supplies) · **N84(d)**
+(test/non-test partition — **not answerable from this corpus**, §7) · **N101** option (c) `--exclude`
+(§4b gives it a second, independent motivation — 90.7% of the scale target's output is generated code —
+but decides nothing) **— now carried as **D12** (N117), where the YAGNI objection is withdrawn on
+measured evidence and the scope is split** · N64/N69/N85/N86(c) · N24/N31/N33/N34/N40 · N46 · N60 (all record-only).
+
+**New, opened by T14 (observations, deciding nothing):**
+
+- **N109 — the scale target's output is dominated by machine-generated code.** 90.7% of `syn`'s findings
+  and 93.7% of its exact-`1.00` findings are generated-to-generated (§4b), in files banner-marked *"not
+  intended for manual editing"*. Excluding them removes 95.7% of findings and only 58% of the run time
+  (§2; ~53% in the verification session, §2b), so it is a **findings-quality** lever, not a performance
+  fix. Feeds N101(c) and T13; decides nothing here. **Promoted at the T14 review to **R10** (N113) —
+  same standing as R8, and calibration can never fix it.**
+- **N110 — F/kLOC is not a constant and cannot be quoted as one.** 10.6 → 43.4 across three ordinary
+  crates (§1), a 4.1× spread which the `Θ(F²)` envelope squares into **17×** in predicted cost. Any
+  user-facing restatement of the envelope in LOC must be a **range**, and must say which end a
+  generated-code-heavy crate sits at. Also: `serde_core` is a **misfit** against its own N108 criterion
+  (chosen for many small `impl` blocks, it is the *least* fragment-dense of the three) — kept and
+  reported per §0.2's honesty clause, not swapped. **Promoted at the T14 review to **A10** (N114), and
+  it is the drift `docs/design.md`'s Performance section carried (N121).**
+- **N111 — a single TED evaluation *can* approach or exceed the entire budget, session-dependently.**
+  One 1 043-node nested fragment cost **17.5 s** in this record's session — 1.7× the 10 s budget, for
+  **one pair** — and **7.6 s**, under it, in the verification repeat (§8). So the breach is **observed
+  and not established**: on this box the same single pair straddles the budget line. The growth is
+  steeply super-quadratic and **consistent with** D5's `O(n²·d²)` or worse; two noisy points cannot
+  place it at or beyond that curve, and this note does not claim they do. R9 and D9 both already say
+  the per-pair cost is shape-dominated; this prices it against the budget for the first time. The
+  2 000-node ceiling is what stands between that curve and an unbounded run.
+  **Not given a risk row of its own (N112): this folds into R9's status line**, which is where
+  shape-dominated per-pair cost already lives.
+
+### T14 review notes (Anders — **APPROVE**, with notes)
+
+Anders approved T14 as committed. **No code, test or measurement was changed in this round** — it is a
+register/documentation round only. Each note below is his ruling, recorded and attributed to him.
+
+- **N112 (Anders) — R1 splits: the measured envelope CLOSES, the tail moves to R9.**
+  R1's measured-envelope half is **closed as a risk**: `Θ(F²)` was reproduced, F/kLOC was measured on
+  three ordinary crates, the budget was stated by the human, and the breach was measured **twice** in
+  independent sessions. A quantity measured that thoroughly is no longer an uncertainty — **it is a
+  documented limit, i.e. a specification**. R1's row is rewritten to say exactly that and to point at
+  **T14 record §2** and **A10** rather than restate them. **N111's tail belongs to R9, not R1, and gets
+  no row of its own**: R9's status line now also carries that one **1 043-node nested fragment cost
+  7.614–17.478 s for a single TED evaluation on a single pair**, straddling the whole 10 s budget.
+  What to *do* about the documented limit is **D10**, a product decision, not a risk.
+- **N113 (Anders) — R10 opened: non-actionable-by-construction findings dominate generated-code-heavy
+  targets.** Promoted out of the T14 ledger (N109) into the risk register **beside R8, at the same
+  standing**. **90.7%** of `syn`'s 6 616 findings and **93.7%** of its 3 432 exact-`1.00` findings are
+  generated↔generated. The class is **unreachable by threshold, by floor, and by the label model** —
+  the duplication is real and the tool is correct; **the generator wrote it**. The consequence Anders
+  wanted on the record: **calibration can never fix a finding that is non-actionable by construction**,
+  so no `--threshold` or `min_nodes` number may be quoted as a mitigation for it. Mitigation is **path
+  exclusion (D12)** plus a docs recipe.
+- **N114 (Anders) — A10 opened: the envelope has no per-LOC constant.** Promoted from N110. Measured
+  **10.56 / 27.05 / 43.38 F/kLOC** across three ordinary crates — a **4.11×** spread that `Θ(F²)`
+  squares into **~17×** in predicted cost. Binding consequences: **every user-facing runtime statement
+  must be a range**, and it must say that **generated-code density** is what places a crate within that
+  range. This is also the drift `docs/design.md` carried and N121 repairs.
+- **N115 (Anders) — D10 opened: the v1 performance position. Human decision.** Options as framed:
+  **(a)** ship with a documented limit; **(b)** one admissible optimisation slice (**S4 = T15–T18**).
+  **Anders' recommendation: (b)**, with **the 10 s budget left exactly where the human set it.** His
+  reasoning as recorded: **51.8 kLOC is a mid-size library**; extrapolating `Θ(F²)` to a **200 kLOC**
+  workspace at *middle* density gives ~**2.4×** F ⇒ ~**5.8×** pairs ⇒ **6–10 minutes**. That figure is
+  **an extrapolation, not a measurement**, and is marked as one wherever it appears — but it makes
+  "documented limit, ship it" read as **unusable on the codebases most in need of a duplicate
+  detector**. **D8 already licenses this work** ("changes only speed, never results"), so S4 needs
+  sequencing, not new architectural permission.
+- **N116 (Anders) — D11 opened: the default `min_nodes` for v1. Human decision, blocked on D10.** The
+  evidence is **complete** — §5d, §6 and §1/§2 — and **more labelling at n = 8 will not move it**.
+  **Anders' recommendation: hold at 20 for v1**, on the principle that **you pay a cost problem with
+  cost levers, not with a semantics lever**; `--min-nodes` is already exposed for users on large crates.
+  Blocked on D10 because an admissible speed-up removes the cost argument entirely.
+- **N117 (Anders) — D12 opened: does `--exclude <glob>` enter v1 scope? Human decision. Anders withdraws
+  his own N101(c) YAGNI objection.** Why: **YAGNI forbids building for a *speculated* need; this one is
+  *measured*** (R10 / §4b). His scope split, recorded exactly: **(1) `--exclude <glob>`: IN** — lives
+  entirely in the `discovery` adapter, `ignore` already ships `OverrideBuilder`, so **no new dependency,
+  no core change, no score change, no output-format change, no R3 exposure**, and determinism holds over
+  the `/`-normalized paths; **(2) `#[cfg(test)]` skipping: OUT, stays deferred** — different layer
+  (**parse**, not discovery) and **N84(d) has no third-party measurement behind it**; do not bundle an
+  unmeasured feature with a measured one; **(3) auto-detecting `@generated` banners: REJECTED for v1** —
+  a heuristic over a comment convention, ecosystem-dependent, and a silent drop rule. He also **disproves
+  the "a workaround already exists" argument** rather than doubting it: **§2's own mitigation command
+  lists 48 files on a command line**, which is evidence the current surface is inadequate. Riders: it is
+  a **findings-quality lever, not a perf fix**; it ships with a **docs recipe**; and excluding `gen/**`
+  moves `syn` from the **43** end of A10's range toward the **~11** end, making A10's range *more*
+  useful.
+- **N118 (Anders) — T13 splits into D11 (the decision) + T13′ (the execution), and §6's conflict is
+  DE-SYMMETRISED.** This last part is a substantive correction to how **T14 record §6** currently reads.
+  The two sides of the "precision vs cost" conflict **are not measuring the same population**:
+  - **§5d's 7-of-11** is about **actionable findings a user loses** — real cost to a real user;
+  - **§6's 5-of-6** is about **cross-crate coincidences between unrelated crates**, a population
+    **users never encounter** in a real run;
+  - and the two populations **overlap heavily** by node count, so the separation the floor buys on the
+    population that matters is **weak and paid for in recall**. **The arithmetic is not restated here.**
+    The corrected ledger, the retained shares, the actionable-share movement under both denominator
+    conventions, the recall cost, the bar on comparing these figures against the retracted aggregate,
+    and §5d's governing caveat are derived **once**, at **§6** — cite it; do not re-derive it.
+
+  **Anders' note as delivered carried the defective figures** — the aggregate §5d retracts. On the true
+  range its **sub-argument inverts** while its **main argument holds**: the population-based
+  de-symmetrisation is **independent of the retracted figures** and survives **unchanged and on its own
+  footing**; the correction does **not** strengthen it. See **§6** for the derivation and the figures.
+
+  **Therefore it is not a genuine tie: the pro-floor leg is the weaker one.** Anders also names the
+  reason the two axes look coupled at all: **cost and precision are coupled only because there is one
+  knob.** `min_nodes` looks like a cost lever only because it is currently the *sole* cost lever — that
+  is a **knob shortage, not evidence**. **If S4 delivers an admissible 10×, the cost argument for
+  raising the floor evaporates entirely.** **T13′** carries N95's consequences **conditionally**: at ≥30
+  the closure population goes to ~zero and free `{}` blocks are already 0, so **D7 becomes a cleanup and
+  A1 may need amending** — but **if D11 holds at 20, T13′ is a no-op and D7/A1 are untouched.**
+- **N119 (Anders) — D9: trigger MET; does not enter v1 on this evidence; RE-OPENS as a decision blocked
+  on T15(c).** The trigger is **MET** (9 fragments, depth 35, real code). It **does not enter v1 on this
+  evidence, and does not stay quietly deferred either**. Of D9's three original objections: *"depth not
+  computed"* is **RESOLVED** (`NormTree::depth()` exists as an unrendered statistic, so the instrument
+  is free); *"a second invisible, untunable drop rule with its own diagnostic"* **stands**; *"one
+  adversarial fixture does not justify it"* is **partially answered** — real code reaches the quadrant,
+  but at **9 of 2 245 (0.4%) on one crate, 0 of ~550 on the other two**, at depth **35** against
+  synthetic **85**. **The decisive gap is that occupancy is not cost.** Nothing on the record says those
+  9 fragments cost anything measurable. Per-pair cost is `n₁·n₂·min(d,l)₁·min(d,l)₂`, and the 9 are
+  mutually size-compatible enough to survive the pre-filter, generating **up to 36 pairs among
+  themselves**. **If that handful is ~20 s of the 104 s**, a shape-aware ceiling is simultaneously D9's
+  answer **and** a 20% perf win. **If it is 0.5 s, D9 stays deferred and we have learned something more
+  important — the cost is *broad*** (521 365 ordinary evaluations), reachable only by memoisation,
+  pruning or parallelism. **Structural point, true regardless of the number: a shape-aware ceiling is
+  NOT admissible under D8** — it **drops fragments**, so it changes results and inherits the **D5/T13
+  evidentiary standard**. We have three crates and **only one occupies the quadrant**; setting a
+  user-visible drop rule from a one-crate basis is the exact error D9's own text warns against. Even if
+  T15(c) is attractive, the number justifies a **targeted optimisation, not a drop rule.**
+- **N120 (Anders) — S4 opened: T15–T18, priced, ordered, and gated.** All four are **blocked on D10**;
+  T16–T18 are additionally **gated on T15**, and each carries **T9's negative control** (dogfood **and**
+  acceptance output **byte-identical**). Anders' priced lever table and his ordering rationale:
+
+  | lever | task | expected win | standing | why it sits where it does |
+  |---|---|---|---|---|
+  | structural-hash memo | **T16** | potentially the whole 10× | **strongest hypothesis, and unmeasured** | equivalence classes, not short-circuits (below) |
+  | label-multiset lower bound | **T17** | **unknown yield** | **same standing as T11** — provably never prunes a real match, same prune-soundness unit test | the size-ratio filter already killed **79%** of pairs and `syn`'s survivors genuinely *are* similar |
+  | `rayon` over the pair loop | **T18** | **6–12×**, reliably | it **always works** | **deliberately last** — the only lever that **touches architecture** (a third-party crate near core), and a parallel 10× would **mask whether the algorithmic work paid** |
+
+  **The memo is explicitly NOT the exact-`1.00` short-circuit.** Skipping identical-hash pairs would
+  skip only **3 432 of 521 365** evaluations — **0.7%, worthless alone**. The win is **equivalence
+  classes**: class A of `k` members against class B of `m` members is `k·m` evaluations of **one**
+  computation, collapsing to **1** under a `(hash_left, hash_right)` memo — pure, **std-only
+  `HashMap`**, **no dependency**, and **determinism untouched, since a cache never orders output**.
+  **Target arithmetic, stated so nobody mistakes the scale of the job: 103.9 s / 521 365 evaluations
+  ≈ 200 µs per TED evaluation, and we need ~10× — this is not a micro-optimisation.** **Gate:** re-run
+  the wall-clock test at the same pins; **the 10 s budget does not move.** Landing at 15 s is **a new
+  honest number and a new human decision**, not a re-based budget.
+- **N121 (Anders) — `docs/design.md` carried real drift, now repaired.** The Performance section stated
+  the envelope **purely in F, with no LOC bridge**, which **A10 invalidates**. The doc pass adds the
+  measured **10.6–43.4 F/kLOC** range, states that **generated-code density** is what places a crate
+  within it, and makes explicit that any user-facing runtime statement is a **range**. **No threshold
+  number entered `docs/design.md`** — that invariant holds. This is the only `design.md` edit in this
+  round.
+- **N122 (Anders) — two durable conventions moved out of the feature file, per golden rule #10.**
+  §9(7)'s **"commit the pre-registration before measuring"** and §0.2's **honesty clause** (a corpus
+  chosen against a declared criterion is **kept and its misfit reported**, never swapped for a
+  better-looking one) are **durable process conventions**, not T14 facts, and would be lost by the next
+  calibration task if they stayed in T14's §9. Recorded — with the related standing item that **D11's
+  successor decision rule needs an absolute-precision term, set by the human *before* the next
+  labelling** — in **`.github/agent-roles/orchestrator.md`** (section *Measurement-task conventions
+  (durable)*), which is the role that owns commit sequencing and the pause-for-human decisions.
+- **N123 (Anders) — explicitly NOT done in this round, so nobody re-litigates it later.**
+  (1) **T14 §9(7) is not retrofitted** — Anders was explicit: **commit as-is**; the pre-registration
+  chronology stays asserted-not-witnessed and the fix belongs to the *next* measurement task.
+  (2) **The pre-registered decision rule is not amended** — its successor, with an absolute-precision
+  term, is **reserved to the human and must be set before the next labelling** (§5c). Amending it now
+  would be the fitting error N102(3) exists to prevent.
+  (3) **No risk row was created for N111** (folded into **R9** per N112) and **no number was invented
+  for N84(d)**, which this corpus still cannot answer.
