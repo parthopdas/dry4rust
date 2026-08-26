@@ -34,7 +34,7 @@ lib; dependencies flow **adapters → core**, never the reverse.
 - **Composition root (`lib`):** the crate root wires the pipeline together — it is the only place that
   reads file **contents** from disk (discover → `read_to_string` → parse → detect → dedup → render) and
   exposes the crate's only public façade `run(&RunOptions) -> Result<RunOutput>` (plus `RunOptions`/`RunOutput`/
-  `RunStats`/`Format` and the `error` types; everything else is `pub(crate)`). It owns the per-file
+  `RunStats`/`FragmentShape`/`Format` and the `error` types; everything else is `pub(crate)`). It owns the per-file
   skip-with-diagnostic policy. Below it, **core** is IO-free; `discovery` is the only other module that
   touches the filesystem (traversal). It also owns the **oversized-fragment ceiling** (`max_nodes`):
   a fragment above it is dropped before `detect` with its own deterministic stderr diagnostic, so a
@@ -124,15 +124,23 @@ depends on lib. This keeps the scoring math testable in isolation and the TED en
   floor, the admissible size-ratio pre-filter, the oversized-fragment ceiling, and confining TED so it
   stays swappable. The envelope is a curve in the **fragment count F** — the node floor is what *sets*
   F — over an O(F²) pair loop, with per-pair cost driven by tree **shape** as well as node count; the
-  ceiling bounds the single worst pair. **Shape, not size, dominates the tail.** Tree-edit distance costs
+  ceiling bounds the single worst pair. **F is not a fixed function of LOC.** Measured across three
+  ordinary third-party crates at the shipped floors, fragment density spans roughly **10.6 to 43.4
+  fragments per kLOC** — a ~4× spread, which the O(F²) pair loop squares into roughly **17×** in
+  predicted cost. What places a crate within that band is **generated-code density**: machine-generated
+  Rust is fragment-dense and sits at the top of the range, ordinary hand-written code at the bottom.
+  So **any user-facing statement of runtime is a range, never a single number** — there is no per-kLOC
+  cost constant to quote. **Shape, not size, dominates the tail.** Tree-edit distance costs
   `O(n₁·n₂·min(depth₁,leaves₁)·min(depth₂,leaves₂))`, so two pairs at the *same* node counts can differ
   by more than an order of magnitude — measured at roughly **40×** between a flat fragment and a deeply
   nested one of equal size, and up to about **95×** in the least favourable reading. The ceiling bounds
-  only the **node** axis, which makes it an imprecise instrument here: it cannot see depth, and depth is
-  not computed. A shape-aware ceiling would be the right instrument and is **not** in v1. The practical
+  only the **node** axis, which makes it an imprecise instrument here: it cannot see depth. Depth is
+  measured and reported as a run statistic, but nothing filters on it — a shape-aware ceiling would be
+  the right instrument and is **not** in v1. The practical
   consequence for a user: a single pathological fragment — deeply nested, or generated — can cost
   seconds to minutes on its own, independently of how large the codebase is. `run` reports F, the
-  TED-evaluation count and the pre/post-dedup candidate counts as run statistics; they are counters only
+  TED-evaluation count and the pre/post-dedup candidate counts as run statistics, alongside the
+  `(node count, depth)` shape of every admitted fragment; they are counters only
   and are never rendered into the report.
 - **Observability:** stdout is the report; diagnostics (e.g. skipped unparsable files) go to stderr and
   never perturb stdout bytes.

@@ -100,6 +100,33 @@ pub struct RunOutput {
     /// Counters describing the work this run did. Diagnostic only — nothing
     /// here is rendered, so [`RunOutput::report`] is unaffected.
     pub stats: RunStats,
+    /// The shape of every fragment that entered the pair loop — the F of
+    /// [`RunStats::fragments`], one entry each, in the loop's own node-count
+    /// order. Diagnostic only, exactly like [`RunOutput::stats`]: nothing here
+    /// is rendered.
+    pub admitted: Vec<FragmentShape>,
+}
+
+/// The two axes of an admitted fragment's cost: how big it is, and how deep.
+///
+/// **Why both (T14/N107(3)).** The `max_nodes` ceiling prices the **node** axis
+/// only, while per-pair TED cost is `O(n₁·n₂·min(depth,leaves)²)` and so is
+/// driven by **shape** as well as size (**R9**) — two pairs at the same node
+/// counts were measured a conservative ≈39× apart (*T12 record, N70*). The
+/// joint distribution over real code is the measurement **D9**'s revisit
+/// trigger is stated against: whether real admitted fragments occur in the
+/// deep-and-large quadrant, or whether that shape is purely synthetic.
+///
+/// Counters, not output — as with [`RunStats`], `report` renders neither field,
+/// so N81's rule for *rendered* fields does not apply.
+#[derive(Debug, Clone, Copy)]
+pub struct FragmentShape {
+    /// Normalized-tree nodes — the same count `--min-nodes`/`--max-nodes` gate
+    /// and the report emits as `left_nodes`/`right_nodes`.
+    pub node_count: usize,
+    /// Normalized-tree height: a single-node fragment is `1`, and each level of
+    /// nesting adds one.
+    pub depth: usize,
 }
 
 /// How much work a [`run`] did: the size of the pair loop's input, how many
@@ -110,7 +137,10 @@ pub struct RunOutput {
 /// TED-evaluation count (N83), and the pre/post-dedup ratio is a corpus
 /// statistic D5 could not report because nothing exposed the pre-dedup count
 /// (N84c). None of the three is derivable from [`RunOutput::report`], so the
-/// measurement needs exactly these four counters — and nothing more.
+/// measurement needs exactly these four counters. T14's fourth question — the
+/// *shape* of the admitted fragments (N107(3)) — is a per-fragment
+/// distribution rather than a scalar and so lives beside this block, in
+/// [`RunOutput::admitted`], leaving this struct `Copy`.
 ///
 /// They are **counters, not output**: `report` does not render them, so N81's
 /// rule (a new *rendered* field must join `dedup`'s clause-4 tie-break) does
@@ -199,6 +229,14 @@ pub fn run(options: &RunOptions) -> Result<RunOutput> {
         report: report::render(&candidates, options.format)?,
         diagnostics,
         stats,
+        admitted: detected
+            .admitted
+            .iter()
+            .map(|(node_count, depth)| FragmentShape {
+                node_count: *node_count,
+                depth: *depth,
+            })
+            .collect(),
     })
 }
 

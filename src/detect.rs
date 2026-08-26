@@ -39,6 +39,16 @@ pub(crate) struct Detected {
     pub(crate) candidates: Vec<Candidate>,
     /// Fragments that cleared the floors and entered the pair loop — **F**.
     pub(crate) fragments: usize,
+    /// `(node_count, depth)` of each of those F fragments, in the pair loop's
+    /// own node-count order.
+    ///
+    /// The joint distribution N107(3) asks for, and the measurement **D9**'s
+    /// revisit trigger is stated against: the ceiling prices the node axis
+    /// only, while per-pair cost also scales with depth (**R9**). It is
+    /// produced here because this is the only place that knows *which*
+    /// fragments are admitted, and it is a pure function of the input set like
+    /// the other two counters.
+    pub(crate) admitted: Vec<(usize, usize)>,
     /// Pairs that reached [`ted::distance`]; the rest were pruned by the
     /// size-ratio pre-filter or dropped by the overlap filter.
     pub(crate) ted_evaluations: usize,
@@ -135,6 +145,10 @@ pub(crate) fn detect_counted(analyzed: &[Analyzed], opts: &DetectOptions) -> Det
     Detected {
         candidates,
         fragments: kept.len(),
+        admitted: kept
+            .iter()
+            .map(|item| (item.fragment.node_count, item.tree.depth()))
+            .collect(),
         ted_evaluations,
     }
 }

@@ -1,6 +1,7 @@
-//! Performance envelope harness (T12 — N59/N70/N83/N84c/N96).
+//! Performance envelope harness (T12 — N59/N70/N83/N84c/N96; D9's nested-shape
+//! curve folded in at T14).
 //!
-//! Three of the five measurements are **`#[ignore]`d benchmarks**, not
+//! Four of the six measurements are **`#[ignore]`d benchmarks**, not
 //! assertions: a wall-clock threshold on a dev machine is a flake, and a number
 //! taken under an unknown load is not evidence. They print a table and are run
 //! on demand:
@@ -455,6 +456,57 @@ fn worst_admitted_pair_wall_clock() {
         assert_eq!(output.stats.ted_evaluations, 1, "expected exactly one pair");
         println!(
             "{shape:<8} {parameter:<10} {nodes:<6} {:<10} {:<10.3?} {:.3?}",
+            output.stats.ted_evaluations, fastest, slowest
+        );
+    }
+}
+
+// --------------------------------------------------------------------------
+// D9 — the nested-family exponent (optional, non-blocking; folded in at T14)
+// --------------------------------------------------------------------------
+
+/// D9 recorded one **cheap missing measurement** and asked for it to be folded
+/// into T14's harness rather than reopening T12: N70 timed the nested family
+/// **at the ceiling only**, so it measured *one point, not a curve*, and the
+/// exponent in that family is unknown. That is why D9's replacement-ceiling
+/// arithmetic is a **bracket** (`n²` ⇒ ≈280 nodes, `n⁴` ⇒ ≈740) and why no
+/// replacement number is named.
+///
+/// This takes the same `nested_fragment` generator at ~500 / ~1000 / ~2000
+/// nodes, two identical copies each, so every run is F = 2 and **exactly one**
+/// TED evaluation — asserted, not assumed. It changes no T12 number: N70's
+/// ceiling point stands as recorded, and this only adds the two cheaper points
+/// beneath it.
+///
+/// It lives in `perf.rs` because the shape generators are here; duplicating
+/// them into `tests/corpus.rs` to satisfy a filename would be the worse trade.
+/// **The ceiling is not changed by this measurement** — D9 is a ruled decision.
+#[test]
+#[ignore = "benchmark: run explicitly with --release -- --ignored --nocapture"]
+fn nested_shape_cost_curve() {
+    println!("\nD9 — nested-family cost curve (threshold 0.85, min-lines 4, min-nodes 20, max-nodes 2000)");
+    println!("target  levels  nodes  TED evals  fastest    slowest");
+    for target in [500usize, 1000, 2000] {
+        // Smallest `levels` reaching the target node count; each probe is one
+        // parse and no TED.
+        let mut levels = 1;
+        while node_count_of(&nested_fragment(levels)) < target && levels < 1000 {
+            levels += 1;
+        }
+        let source = nested_fragment(levels);
+        let nodes = node_count_of(&source);
+        if nodes > MAX_NODES {
+            println!("{target:<7} {levels:<7} {nodes:<6} above the ceiling, skipped");
+            continue;
+        }
+        let dir = TempDir::new().expect("create temp dir");
+        std::fs::write(dir.path().join("left.rs"), &source).expect("write file");
+        std::fs::write(dir.path().join("right.rs"), &source).expect("write file");
+
+        let (output, fastest, slowest) = timed(dir.path(), 20);
+        assert_eq!(output.stats.ted_evaluations, 1, "expected exactly one pair");
+        println!(
+            "{target:<7} {levels:<7} {nodes:<6} {:<10} {:<10.3?} {:.3?}",
             output.stats.ted_evaluations, fastest, slowest
         );
     }

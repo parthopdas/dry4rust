@@ -39,16 +39,21 @@ use dry4rust::{Format, RunOptions};
 /// count alone, sets the price. N66 said "if a single admitted maximal pair
 /// costs seconds, 2000 is too generous"; that condition is met.
 ///
-/// **The human ruled: the ceiling stays 2000 in v1 (D9).** It is not an open
-/// question. No lower value defends itself — cost is
-/// `n₁·n₂·min(d,l)₁·min(d,l)₂` and in the pathological family depth scales
-/// *with* `n`, so every defensible replacement lands at or below the largest
-/// legitimate fragment we have measured (439 nodes, above), and lowering would
-/// drop large **flat** fragments, which are the cheap ones. The correct
-/// instrument prices **shape**, not node count, and is deferred (D9): depth is
-/// not computed anywhere today. Revisit trigger: T14's `(nodes, depth)`
-/// histogram showing real admitted fragments that are both deep and large, or
-/// a user report of a single pair costing minutes.
+/// **The human ruled: the flat ceiling stays 2000 in v1 (D9).** No lower value
+/// defends itself — cost is `n₁·n₂·min(d,l)₁·min(d,l)₂` and in the pathological
+/// family depth scales *with* `n`, so every defensible replacement lands at or
+/// below the largest legitimate fragment we have measured (439 nodes, above),
+/// and lowering would drop large **flat** fragments, which are the cheap ones.
+///
+/// The correct instrument prices **shape**, not node count. That **shape-aware
+/// decision has re-opened and is blocked on T15(c)** — its revisit trigger is
+/// met (T14's `(nodes, depth)` histogram found real deep-and-large admitted
+/// fragments on `syn`), and a **shape-aware ceiling is not admissible under D8
+/// anyway, because it drops fragments**. The reasoning is **not** restated
+/// here, deliberately, so it cannot drift out of date again: **see D9 (and
+/// N119) in `docs/features/001-duplicate-code-detection.md`** for the current
+/// standing, the trigger evidence, and what T15(c) has to answer. What is
+/// settled, and all this constant encodes, is the v1 value: **2000**.
 const MAX_NODES: usize = 2000;
 
 /// Parse the process arguments into library run options.

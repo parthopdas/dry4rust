@@ -388,6 +388,19 @@ impl NormTree {
             .map(NormTree::node_count)
             .sum::<usize>()
     }
+
+    /// Height of this subtree in nodes: a leaf is `1`, and each level of
+    /// nesting adds one — the same "counts self" convention as
+    /// [`NormTree::node_count`].
+    ///
+    /// The second axis of per-pair cost (**R9**): Zhang–Shasha costs
+    /// `O(n₁·n₂·min(depth₁,leaves₁)·min(depth₂,leaves₂))`, so node count alone
+    /// does not price a pair. Reported beside `node_count` as a run statistic
+    /// (T14/N107(3), the measurement **D9**'s trigger is stated against) and,
+    /// like every counter, never rendered into the report.
+    pub(crate) fn depth(&self) -> usize {
+        1 + self.children.iter().map(NormTree::depth).max().unwrap_or(0)
+    }
 }
 
 #[cfg(test)]
@@ -420,5 +433,45 @@ mod tests {
     #[test]
     fn leaf_has_node_count_one() {
         assert_eq!(NormTree::leaf(Label::Literal).node_count(), 1);
+    }
+
+    /// Depth is the **longest** root-to-leaf path, not the shortest and not the
+    /// child count: the two axes are independent, which is exactly why R9's
+    /// cost is not readable off `node_count`. A leaf is `1`, on the same
+    /// counts-self convention as `node_count`.
+    #[test]
+    fn depth_is_the_longest_root_to_leaf_path() {
+        assert_eq!(NormTree::leaf(Label::Literal).depth(), 1);
+
+        // Function
+        // └─ Block            <- shallow sibling (Let) and a deeper one
+        //    ├─ Let
+        //    └─ Block
+        //       └─ Return
+        let tree = NormTree::new(
+            Label::Function {
+                is_async: false,
+                is_const: false,
+                is_unsafe: false,
+            },
+            vec![NormTree::new(
+                Label::Block {
+                    kind: BlockKind::Plain,
+                    tail: false,
+                },
+                vec![
+                    NormTree::leaf(Label::Let),
+                    NormTree::new(
+                        Label::Block {
+                            kind: BlockKind::Plain,
+                            tail: false,
+                        },
+                        vec![NormTree::leaf(Label::Return)],
+                    ),
+                ],
+            )],
+        );
+        assert_eq!(tree.node_count(), 5);
+        assert_eq!(tree.depth(), 4);
     }
 }
