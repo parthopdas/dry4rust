@@ -75,11 +75,11 @@ numbering **stable** and update references on any insert/reorder.
 - **Pack:** `4-pack` _(role selector: `4-pack ⇒ orchestrator`, `1-pack ⇒ solo`; the `agentify` skill asks and stamps this — no default. Preflight Gate-1 **blocks** if unset, i.e. the value isn't `1-pack`/`4-pack`.)_
 - **Persona:** JARVIS _(driver skin; the `agentify` skill asks and stamps this — no default, not a preflight blocker. Menu = the overlays in `.github/personas/`, today JARVIS | FRIDAY.)_
 - **Generated artifacts (never edit):** `/target`
-- **App run/restart & liveness mechanism:** `<<FILL_ME: how to (re)start the app locally + any lifecycle/liveness signal, or "none">>`
+- **App run/restart & liveness mechanism:** `none (CLI; run via cargo run -- <args>)`
 - **Build/test skills:** `.github/skills/build-test.md` (fast, Dave) and
   `.github/skills/build-test-full.md` (full, Bhaskar) are framework-owned recipes that run the commands
   named in the **Commands** table below — fill that table in for your stack.
-- **Language-specific conventions:** `<<FILL_ME: e.g. C#: prefer least-privilege access modifiers; avoid internal unless required>>`
+- **Language-specific conventions:** `Rust: edition 2021, MSRV 1.74 (pin in CI). Errors: thiserror in the lib (typed public errors), anyhow only in the bin. No unwrap/expect/panic!/panicking-index on reachable lib paths (the bin may ?-bubble to an anyhow exit). Least-privilege visibility (default private; prefer pub(crate) over pub; no blanket re-exports). Module layout confines adapters — syn (parse), ignore (discovery), clap (cli), serde (report) — to their own modules; core (tree/ted/similarity/dedup/detect) is pure std-only and side-effect-free. Deterministic, cross-OS-stable output: normalize paths to /, normalize line endings, sort before emit, never serialize from an unordered map. cargo fmt --check and cargo clippy --all-targets -- -D warnings must be clean.`
 - **CI/CD pipeline:** `GitHub Actions - .github/workflows/ci.yml (fmt + clippy + build + test on ubuntu-latest & windows-latest). Agents never deploy.`
 
 ### Commands
